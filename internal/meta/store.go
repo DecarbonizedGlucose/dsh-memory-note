@@ -13,22 +13,16 @@ import (
 
 	_ "modernc.org/sqlite"
 
-	"github.com/decglu/dsh-memory-note/internal/data"
-	storesql "github.com/decglu/dsh-memory-note/internal/store/sql"
-)
-
-var (
-	ErrNotFound   = errors.New("workspace not found")
-	ErrPathUsed   = errors.New("workspace path is already registered")
-	ErrBusy       = errors.New("workspace is busy")
-	ErrHomeBroken = errors.New("DSH_MEMORY_NOTE_HOME is broken; meta.db or memory directory is missing; all data is untrusted; clean the directory manually")
+	"github.com/DecarbonizedGlucose/dsh-memory-note/internal/data"
+	"github.com/DecarbonizedGlucose/dsh-memory-note/internal/protocol"
+	storesql "github.com/DecarbonizedGlucose/dsh-memory-note/internal/store/sql"
 )
 
 type Workspace struct {
-	ID        int64     `json:"workspace_id"`
-	Path      string    `json:"path"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	ID        int64
+	Path      string
+	CreatedAt time.Time
+	UpdatedAt time.Time
 }
 
 type Store struct {
@@ -69,7 +63,7 @@ func PrepareHome(ctx context.Context, home, initID string) (bool, error) {
 	info, err := os.Stat(home)
 	if err == nil {
 		if !info.IsDir() {
-			return false, ErrHomeBroken
+			return false, protocol.ErrHomeBroken
 		}
 		return false, checkHome(home)
 	}
@@ -108,7 +102,7 @@ func checkHome(home string) error {
 	metaInfo, metaErr := os.Stat(data.MetaDB(home))
 	memoryInfo, memoryErr := os.Stat(data.MemoryDir(home))
 	if metaErr != nil || memoryErr != nil || !metaInfo.Mode().IsRegular() || !memoryInfo.IsDir() {
-		return ErrHomeBroken
+		return protocol.ErrHomeBroken
 	}
 	return nil
 }
@@ -120,7 +114,7 @@ func (s *Store) Register(ctx context.Context, path string) (Workspace, bool, err
 	}
 	if current, err := s.FindPath(ctx, path); err == nil {
 		return current, false, nil
-	} else if !errors.Is(err, ErrNotFound) {
+	} else if !errors.Is(err, protocol.ErrWorkspaceNotFound) {
 		return Workspace{}, false, err
 	}
 	now := time.Now().UTC()
@@ -159,10 +153,10 @@ func (s *Store) Rebind(ctx context.Context, id int64, path string) (Workspace, e
 	now := time.Now().UTC()
 	result, err := s.db.ExecContext(ctx, storesql.UpdateWorkspacePath, path, stamp(now), id)
 	if err != nil {
-		return Workspace{}, ErrPathUsed
+		return Workspace{}, protocol.ErrWorkspacePathUsed
 	}
 	if count, _ := result.RowsAffected(); count != 1 {
-		return Workspace{}, ErrNotFound
+		return Workspace{}, protocol.ErrWorkspaceNotFound
 	}
 	return s.Find(ctx, id)
 }
@@ -173,7 +167,7 @@ func (s *Store) Delete(ctx context.Context, id int64) error {
 		return err
 	}
 	if count, _ := result.RowsAffected(); count != 1 {
-		return ErrNotFound
+		return protocol.ErrWorkspaceNotFound
 	}
 	return nil
 }
@@ -214,7 +208,7 @@ func (s *Store) lock(ctx context.Context, wid int64, owner, mode string) (*Lock,
 			return nil, err
 		}
 		if time.Now().After(deadline) {
-			return nil, ErrBusy
+			return nil, protocol.ErrWorkspaceBusy
 		}
 		select {
 		case <-ctx.Done():
@@ -249,7 +243,7 @@ func scanWorkspace(row rowScanner) (Workspace, error) {
 	var created, updated string
 	if err := row.Scan(&workspace.ID, &workspace.Path, &created, &updated); err != nil {
 		if errors.Is(err, stdsql.ErrNoRows) {
-			return Workspace{}, ErrNotFound
+			return Workspace{}, protocol.ErrWorkspaceNotFound
 		}
 		return Workspace{}, err
 	}

@@ -3,154 +3,83 @@ package rpc
 import (
 	"context"
 
-	"github.com/decglu/dsh-memory-note/internal/memory"
+	"github.com/DecarbonizedGlucose/dsh-memory-note/internal/memory"
+	"github.com/DecarbonizedGlucose/dsh-memory-note/internal/protocol"
 )
 
-type MemorySearchRequest struct {
-	WorkspaceID int64         `json:"workspace_id"`
-	Query       string        `json:"query,omitempty"`
-	Filter      memory.Filter `json:"filter,omitempty"`
-	Limit       int           `json:"limit,omitempty"`
-}
-
-type MemorySearchResponse struct {
-	Memories []memory.SearchHit `json:"memories"`
-}
-
-func (s Server) MemorySearch(ctx context.Context, raw string) (MemorySearchResponse, error) {
-	var request MemorySearchRequest
-	if err := decode(raw, &request); err != nil {
-		return MemorySearchResponse{}, err
+func (s Server) MemorySearch(ctx context.Context, raw string) (protocol.MemorySearchResponse, error) {
+	var request protocol.MemorySearchRequest
+	if err := protocol.Decode(raw, &request); err != nil {
+		return protocol.MemorySearchResponse{}, err
 	}
-	hits, err := withMemory(ctx, s, request.WorkspaceID, "read", func(store *memory.Store) ([]memory.SearchHit, error) {
-		return store.Search(ctx, memory.SearchInput{
-			Query: request.Query, Filter: request.Filter, Limit: request.Limit,
-		})
+	hits, err := withMemoryStore(ctx, s, request.WorkspaceID, "read", func(store *memory.Store) ([]protocol.MemorySearchHit, error) {
+		return store.Search(ctx, request)
 	})
-	return MemorySearchResponse{Memories: hits}, err
+	return protocol.MemorySearchResponse{Memories: hits}, err
 }
 
-type MemoryGetRequest struct {
-	WorkspaceID int64  `json:"workspace_id"`
-	MemoryID    string `json:"memory_id"`
-}
-
-type MemoryGetResponse struct {
-	Memory memory.Memory `json:"memory"`
-}
-
-func (s Server) MemoryGet(ctx context.Context, raw string) (MemoryGetResponse, error) {
-	var request MemoryGetRequest
-	if err := decode(raw, &request); err != nil {
-		return MemoryGetResponse{}, err
+func (s Server) MemoryGet(ctx context.Context, raw string) (protocol.MemoryGetResponse, error) {
+	var request protocol.MemoryGetRequest
+	if err := protocol.Decode(raw, &request); err != nil {
+		return protocol.MemoryGetResponse{}, err
 	}
-	item, err := withMemory(ctx, s, request.WorkspaceID, "read", func(store *memory.Store) (memory.Memory, error) {
-		return store.Get(ctx, request.MemoryID)
+	item, err := withMemoryStore(ctx, s, request.WorkspaceID, "read", func(store *memory.Store) (protocol.Memory, error) {
+		return store.Get(ctx, request)
 	})
-	return MemoryGetResponse{Memory: item}, err
+	return protocol.MemoryGetResponse{Memory: item}, err
 }
 
-type MemoryCreateRequest struct {
-	WorkspaceID int64 `json:"workspace_id"`
-	memory.CreateInput
-}
-
-type MemoryCreateResponse struct {
-	Memory memory.Memory `json:"memory"`
-}
-
-func (s Server) MemoryCreate(ctx context.Context, raw string) (MemoryCreateResponse, error) {
-	var request MemoryCreateRequest
-	if err := decode(raw, &request); err != nil {
-		return MemoryCreateResponse{}, err
+func (s Server) MemoryCreate(ctx context.Context, raw string) (protocol.MemoryCreateResponse, error) {
+	var request protocol.MemoryCreateRequest
+	if err := protocol.Decode(raw, &request); err != nil {
+		return protocol.MemoryCreateResponse{}, err
 	}
-	item, err := withMemory(ctx, s, request.WorkspaceID, "write", func(store *memory.Store) (memory.Memory, error) {
-		return store.Create(ctx, request.CreateInput)
+	item, err := withMemoryStore(ctx, s, request.WorkspaceID, "write", func(store *memory.Store) (protocol.Memory, error) {
+		return store.Create(ctx, request)
 	})
-	return MemoryCreateResponse{Memory: item}, err
+	return protocol.MemoryCreateResponse{Memory: item}, err
 }
 
-type MemoryUpdateRequest struct {
-	WorkspaceID int64 `json:"workspace_id"`
-	memory.UpdateInput
-}
-
-type MemoryUpdateResponse struct {
-	Memory memory.Memory `json:"memory"`
-}
-
-func (s Server) MemoryUpdate(ctx context.Context, raw string) (MemoryUpdateResponse, error) {
-	var request MemoryUpdateRequest
-	if err := decode(raw, &request); err != nil {
-		return MemoryUpdateResponse{}, err
+func (s Server) MemoryUpdate(ctx context.Context, raw string) (protocol.MemoryUpdateResponse, error) {
+	var request protocol.MemoryUpdateRequest
+	if err := protocol.Decode(raw, &request); err != nil {
+		return protocol.MemoryUpdateResponse{}, err
 	}
-	item, err := withMemory(ctx, s, request.WorkspaceID, "write", func(store *memory.Store) (memory.Memory, error) {
-		return store.Update(ctx, request.UpdateInput)
+	item, err := withMemoryStore(ctx, s, request.WorkspaceID, "write", func(store *memory.Store) (protocol.Memory, error) {
+		return store.Update(ctx, request)
 	})
-	return MemoryUpdateResponse{Memory: item}, err
+	return protocol.MemoryUpdateResponse{Memory: item}, err
 }
 
-type MemorySupersedeRequest struct {
-	WorkspaceID     int64              `json:"workspace_id"`
-	MemoryID        string             `json:"memory_id"`
-	ExpectedVersion int                `json:"expected_version"`
-	New             memory.CreateInput `json:"new"`
-}
-
-type MemorySupersedeResponse struct {
-	Old memory.Memory `json:"old"`
-	New memory.Memory `json:"new"`
-}
-
-func (s Server) MemorySupersede(ctx context.Context, raw string) (MemorySupersedeResponse, error) {
-	var request MemorySupersedeRequest
-	if err := decode(raw, &request); err != nil {
-		return MemorySupersedeResponse{}, err
+func (s Server) MemorySupersede(ctx context.Context, raw string) (protocol.MemorySupersedeResponse, error) {
+	var request protocol.MemorySupersedeRequest
+	if err := protocol.Decode(raw, &request); err != nil {
+		return protocol.MemorySupersedeResponse{}, err
 	}
-	result, err := withMemory(ctx, s, request.WorkspaceID, "write", func(store *memory.Store) (memory.SupersedeResult, error) {
-		return store.Supersede(ctx, request.MemoryID, request.ExpectedVersion, request.New)
+	response, err := withMemoryStore(ctx, s, request.WorkspaceID, "write", func(store *memory.Store) (protocol.MemorySupersedeResponse, error) {
+		return store.Supersede(ctx, request)
 	})
-	return MemorySupersedeResponse{Old: result.Old, New: result.New}, err
+	return response, err
 }
 
-type MemoryInvalidateRequest struct {
-	WorkspaceID     int64  `json:"workspace_id"`
-	MemoryID        string `json:"memory_id"`
-	ExpectedVersion int    `json:"expected_version"`
-}
-
-type MemoryInvalidateResponse struct {
-	Memory memory.Memory `json:"memory"`
-}
-
-func (s Server) MemoryInvalidate(ctx context.Context, raw string) (MemoryInvalidateResponse, error) {
-	var request MemoryInvalidateRequest
-	if err := decode(raw, &request); err != nil {
-		return MemoryInvalidateResponse{}, err
+func (s Server) MemoryInvalidate(ctx context.Context, raw string) (protocol.MemoryInvalidateResponse, error) {
+	var request protocol.MemoryInvalidateRequest
+	if err := protocol.Decode(raw, &request); err != nil {
+		return protocol.MemoryInvalidateResponse{}, err
 	}
-	item, err := withMemory(ctx, s, request.WorkspaceID, "write", func(store *memory.Store) (memory.Memory, error) {
-		return store.Invalidate(ctx, request.MemoryID, request.ExpectedVersion)
+	item, err := withMemoryStore(ctx, s, request.WorkspaceID, "write", func(store *memory.Store) (protocol.Memory, error) {
+		return store.Invalidate(ctx, request)
 	})
-	return MemoryInvalidateResponse{Memory: item}, err
+	return protocol.MemoryInvalidateResponse{Memory: item}, err
 }
 
-type MemoryDeleteRequest struct {
-	WorkspaceID     int64  `json:"workspace_id"`
-	MemoryID        string `json:"memory_id"`
-	ExpectedVersion int    `json:"expected_version"`
-}
-
-type MemoryDeleteResponse struct {
-	Deleted bool `json:"deleted"`
-}
-
-func (s Server) MemoryDelete(ctx context.Context, raw string) (MemoryDeleteResponse, error) {
-	var request MemoryDeleteRequest
-	if err := decode(raw, &request); err != nil {
-		return MemoryDeleteResponse{}, err
+func (s Server) MemoryDelete(ctx context.Context, raw string) (protocol.MemoryDeleteResponse, error) {
+	var request protocol.MemoryDeleteRequest
+	if err := protocol.Decode(raw, &request); err != nil {
+		return protocol.MemoryDeleteResponse{}, err
 	}
-	_, err := withMemory(ctx, s, request.WorkspaceID, "write", func(store *memory.Store) (struct{}, error) {
-		return struct{}{}, store.Delete(ctx, request.MemoryID, request.ExpectedVersion)
+	_, err := withMemoryStore(ctx, s, request.WorkspaceID, "write", func(store *memory.Store) (struct{}, error) {
+		return struct{}{}, store.Delete(ctx, request)
 	})
-	return MemoryDeleteResponse{Deleted: err == nil}, err
+	return protocol.MemoryDeleteResponse{Deleted: err == nil}, err
 }

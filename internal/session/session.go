@@ -6,9 +6,9 @@ import (
 	"encoding/hex"
 	"fmt"
 
-	"github.com/decglu/dsh-memory-note/internal/data"
-	"github.com/decglu/dsh-memory-note/internal/meta"
-	"github.com/decglu/dsh-memory-note/internal/rpc"
+	"github.com/DecarbonizedGlucose/dsh-memory-note/internal/data"
+	"github.com/DecarbonizedGlucose/dsh-memory-note/internal/meta"
+	"github.com/DecarbonizedGlucose/dsh-memory-note/internal/rpc"
 )
 
 type Session struct {
@@ -43,6 +43,10 @@ func NewAt(home string) (*Session, error) {
 func (s *Session) Check(ctx context.Context) error {
 	_, err := meta.PrepareHome(ctx, s.Home, s.ID)
 	return err
+}
+
+func (s *Session) Run(ctx context.Context, args []string) (any, error) {
+	return s.Server.Serve(ctx, args)
 }
 
 func newID() (string, error) {

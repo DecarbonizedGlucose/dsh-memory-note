@@ -7,8 +7,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/decglu/dsh-memory-note/internal/meta"
-	"github.com/decglu/dsh-memory-note/internal/rpc"
+	"github.com/DecarbonizedGlucose/dsh-memory-note/internal/protocol"
+	"github.com/DecarbonizedGlucose/dsh-memory-note/internal/rpc"
 )
 
 func TestCheckInitializesMissingHome(t *testing.T) {
@@ -91,7 +91,7 @@ func TestCheckRejectsBrokenHome(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := current.Check(context.Background()); !errors.Is(err, meta.ErrHomeBroken) {
+			if err := current.Check(context.Background()); !errors.Is(err, protocol.ErrHomeBroken) {
 				t.Fatalf("expected broken home error, got %v", err)
 			}
 		})

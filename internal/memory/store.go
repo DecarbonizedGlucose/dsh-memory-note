@@ -18,7 +18,8 @@ import (
 
 	_ "modernc.org/sqlite"
 
-	storesql "github.com/decglu/dsh-memory-note/internal/store/sql"
+	"github.com/DecarbonizedGlucose/dsh-memory-note/internal/protocol"
+	storesql "github.com/DecarbonizedGlucose/dsh-memory-note/internal/store/sql"
 )
 
 type Store struct {
@@ -54,182 +55,182 @@ func (s *Store) init(ctx context.Context) error {
 	return nil
 }
 
-func (s *Store) Create(ctx context.Context, input CreateInput) (Memory, error) {
+func (s *Store) Create(ctx context.Context, request protocol.MemoryCreateRequest) (protocol.Memory, error) {
+	input := request.MemoryCreate
 	input, err := cleanCreate(input)
 	if err != nil {
-		return Memory{}, err
+		return protocol.Memory{}, err
 	}
 	id, err := newID()
 	if err != nil {
-		return Memory{}, err
+		return protocol.Memory{}, err
 	}
 	now := time.Now().UTC()
-	memory := Memory{
+	item := protocol.Memory{
 		ID: id, WorkspaceID: s.wid, Content: input.Content, Type: input.Type, Scope: input.Scope,
 		Source: input.Source, Metadata: input.Metadata,
-		State: Active, Version: 1, CreatedAt: now, UpdatedAt: now,
+		State: protocol.MemoryActive, Version: 1, CreatedAt: now, UpdatedAt: now,
 	}
-	if err := insert(ctx, s.db, memory); err != nil {
-		return Memory{}, err
+	if err := insert(ctx, s.db, item); err != nil {
+		return protocol.Memory{}, err
 	}
-	return memory, nil
+	return item, nil
 }
 
-func (s *Store) Get(ctx context.Context, id string) (Memory, error) {
-	if strings.TrimSpace(id) == "" {
-		return Memory{}, fmt.Errorf("%w: memory_id is required", ErrInvalidRequest)
+func (s *Store) Get(ctx context.Context, request protocol.MemoryGetRequest) (protocol.Memory, error) {
+	if strings.TrimSpace(request.MemoryID) == "" {
+		return protocol.Memory{}, fmt.Errorf("%w: memory_id is required", protocol.ErrInvalidRequest)
 	}
-	return get(ctx, s.db, s.wid, id)
+	return get(ctx, s.db, s.wid, request.MemoryID)
 }
 
-func (s *Store) Update(ctx context.Context, input UpdateInput) (Memory, error) {
-	if input.ExpectedVersion < 1 || strings.TrimSpace(input.ID) == "" {
-		return Memory{}, fmt.Errorf("%w: memory_id and expected_version are required", ErrInvalidRequest)
+func (s *Store) Update(ctx context.Context, request protocol.MemoryUpdateRequest) (protocol.Memory, error) {
+	if request.ExpectedVersion < 1 || strings.TrimSpace(request.MemoryID) == "" {
+		return protocol.Memory{}, fmt.Errorf("%w: memory_id and expected_version are required", protocol.ErrInvalidRequest)
 	}
-	if input.Content == nil && input.Type == nil && input.Scope == nil && input.Source == nil && input.Metadata == nil {
-		return Memory{}, fmt.Errorf("%w: at least one update field is required", ErrInvalidRequest)
+	if request.Content == nil && request.Type == nil && request.Scope == nil && request.Source == nil && request.Metadata == nil {
+		return protocol.Memory{}, fmt.Errorf("%w: at least one update field is required", protocol.ErrInvalidRequest)
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return Memory{}, err
+		return protocol.Memory{}, err
 	}
 	defer tx.Rollback()
-	current, err := get(ctx, tx, s.wid, input.ID)
+	current, err := get(ctx, tx, s.wid, request.MemoryID)
 	if err != nil {
-		return Memory{}, err
+		return protocol.Memory{}, err
 	}
-	if current.State != Active {
-		return Memory{}, ErrInvalidState
+	if current.State != protocol.MemoryActive {
+		return protocol.Memory{}, protocol.ErrInvalidMemoryState
 	}
-	if current.Version != input.ExpectedVersion {
-		return Memory{}, ErrConflict
+	if current.Version != request.ExpectedVersion {
+		return protocol.Memory{}, protocol.ErrVersionConflict
 	}
-	if input.Content != nil {
-		current.Content = *input.Content
+	if request.Content != nil {
+		current.Content = *request.Content
 	}
-	if input.Type != nil {
-		current.Type = *input.Type
+	if request.Type != nil {
+		current.Type = *request.Type
 	}
-	if input.Scope != nil {
-		current.Scope = *input.Scope
+	if request.Scope != nil {
+		current.Scope = *request.Scope
 	}
-	if input.Source != nil {
-		current.Source = *input.Source
+	if request.Source != nil {
+		current.Source = *request.Source
 	}
-	if input.Metadata != nil {
-		current.Metadata = *input.Metadata
+	if request.Metadata != nil {
+		current.Metadata = *request.Metadata
 	}
-	cleaned, err := cleanCreate(CreateInput{
+	cleaned, err := cleanCreate(protocol.MemoryCreate{
 		Content: current.Content, Type: current.Type, Scope: current.Scope,
 		Source: current.Source, Metadata: current.Metadata,
 	})
 	if err != nil {
-		return Memory{}, err
+		return protocol.Memory{}, err
 	}
 	current.Content, current.Type, current.Scope = cleaned.Content, cleaned.Type, cleaned.Scope
 	current.Source, current.Metadata = cleaned.Source, cleaned.Metadata
 	current.Version++
 	current.UpdatedAt = time.Now().UTC()
-	if err := updateRow(ctx, tx, current, input.ExpectedVersion); err != nil {
-		return Memory{}, err
+	if err := updateRow(ctx, tx, current, request.ExpectedVersion); err != nil {
+		return protocol.Memory{}, err
 	}
 	if err := tx.Commit(); err != nil {
-		return Memory{}, err
+		return protocol.Memory{}, err
 	}
 	return current, nil
 }
 
-// Supersede keeps the old memory and creates a new memory in one transaction.
-func (s *Store) Supersede(ctx context.Context, oldID string, expectedVersion int, input CreateInput) (SupersedeResult, error) {
-	if expectedVersion < 1 || strings.TrimSpace(oldID) == "" {
-		return SupersedeResult{}, fmt.Errorf("%w: memory_id and expected_version are required", ErrInvalidRequest)
+func (s *Store) Supersede(ctx context.Context, request protocol.MemorySupersedeRequest) (protocol.MemorySupersedeResponse, error) {
+	if request.ExpectedVersion < 1 || strings.TrimSpace(request.MemoryID) == "" {
+		return protocol.MemorySupersedeResponse{}, fmt.Errorf("%w: memory_id and expected_version are required", protocol.ErrInvalidRequest)
 	}
-	input, err := cleanCreate(input)
+	input, err := cleanCreate(request.New)
 	if err != nil {
-		return SupersedeResult{}, err
+		return protocol.MemorySupersedeResponse{}, err
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return SupersedeResult{}, err
+		return protocol.MemorySupersedeResponse{}, err
 	}
 	defer tx.Rollback()
-	old, err := get(ctx, tx, s.wid, oldID)
+	old, err := get(ctx, tx, s.wid, request.MemoryID)
 	if err != nil {
-		return SupersedeResult{}, err
+		return protocol.MemorySupersedeResponse{}, err
 	}
-	if old.State != Active {
-		return SupersedeResult{}, ErrInvalidState
+	if old.State != protocol.MemoryActive {
+		return protocol.MemorySupersedeResponse{}, protocol.ErrInvalidMemoryState
 	}
-	if old.Version != expectedVersion {
-		return SupersedeResult{}, ErrConflict
+	if old.Version != request.ExpectedVersion {
+		return protocol.MemorySupersedeResponse{}, protocol.ErrVersionConflict
 	}
 	newID, err := newID()
 	if err != nil {
-		return SupersedeResult{}, err
+		return protocol.MemorySupersedeResponse{}, err
 	}
 	now := time.Now().UTC()
-	next := Memory{
+	next := protocol.Memory{
 		ID: newID, WorkspaceID: s.wid, Content: input.Content, Type: input.Type, Scope: input.Scope,
 		Source: input.Source, Metadata: input.Metadata,
-		State: Active, Version: 1, Supersedes: old.ID, CreatedAt: now, UpdatedAt: now,
+		State: protocol.MemoryActive, Version: 1, Supersedes: old.ID, CreatedAt: now, UpdatedAt: now,
 	}
 	if err := insert(ctx, tx, next); err != nil {
-		return SupersedeResult{}, err
+		return protocol.MemorySupersedeResponse{}, err
 	}
-	old.State, old.SupersededBy, old.Version, old.UpdatedAt = Superseded, next.ID, old.Version+1, now
-	if err := updateRow(ctx, tx, old, expectedVersion); err != nil {
-		return SupersedeResult{}, err
+	old.State, old.SupersededBy, old.Version, old.UpdatedAt = protocol.MemorySuperseded, next.ID, old.Version+1, now
+	if err := updateRow(ctx, tx, old, request.ExpectedVersion); err != nil {
+		return protocol.MemorySupersedeResponse{}, err
 	}
 	if err := tx.Commit(); err != nil {
-		return SupersedeResult{}, err
+		return protocol.MemorySupersedeResponse{}, err
 	}
-	return SupersedeResult{Old: old, New: next}, nil
+	return protocol.MemorySupersedeResponse{Old: old, New: next}, nil
 }
 
-func (s *Store) Invalidate(ctx context.Context, id string, expectedVersion int) (Memory, error) {
-	if expectedVersion < 1 || strings.TrimSpace(id) == "" {
-		return Memory{}, fmt.Errorf("%w: memory_id and expected_version are required", ErrInvalidRequest)
+func (s *Store) Invalidate(ctx context.Context, request protocol.MemoryInvalidateRequest) (protocol.Memory, error) {
+	if request.ExpectedVersion < 1 || strings.TrimSpace(request.MemoryID) == "" {
+		return protocol.Memory{}, fmt.Errorf("%w: memory_id and expected_version are required", protocol.ErrInvalidRequest)
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return Memory{}, err
+		return protocol.Memory{}, err
 	}
 	defer tx.Rollback()
-	current, err := get(ctx, tx, s.wid, id)
+	current, err := get(ctx, tx, s.wid, request.MemoryID)
 	if err != nil {
-		return Memory{}, err
+		return protocol.Memory{}, err
 	}
-	if current.State != Active {
-		return Memory{}, ErrInvalidState
+	if current.State != protocol.MemoryActive {
+		return protocol.Memory{}, protocol.ErrInvalidMemoryState
 	}
-	if current.Version != expectedVersion {
-		return Memory{}, ErrConflict
+	if current.Version != request.ExpectedVersion {
+		return protocol.Memory{}, protocol.ErrVersionConflict
 	}
-	current.State, current.Version, current.UpdatedAt = Invalid, current.Version+1, time.Now().UTC()
-	if err := updateRow(ctx, tx, current, expectedVersion); err != nil {
-		return Memory{}, err
+	current.State, current.Version, current.UpdatedAt = protocol.MemoryInvalid, current.Version+1, time.Now().UTC()
+	if err := updateRow(ctx, tx, current, request.ExpectedVersion); err != nil {
+		return protocol.Memory{}, err
 	}
 	if err := tx.Commit(); err != nil {
-		return Memory{}, err
+		return protocol.Memory{}, err
 	}
 	return current, nil
 }
 
-func (s *Store) Delete(ctx context.Context, id string, expectedVersion int) error {
-	if expectedVersion < 1 || strings.TrimSpace(id) == "" {
-		return fmt.Errorf("%w: memory_id and expected_version are required", ErrInvalidRequest)
+func (s *Store) Delete(ctx context.Context, request protocol.MemoryDeleteRequest) error {
+	if request.ExpectedVersion < 1 || strings.TrimSpace(request.MemoryID) == "" {
+		return fmt.Errorf("%w: memory_id and expected_version are required", protocol.ErrInvalidRequest)
 	}
-	result, err := s.db.ExecContext(ctx, storesql.DeleteMemory, s.wid, id, expectedVersion)
+	result, err := s.db.ExecContext(ctx, storesql.DeleteMemory, s.wid, request.MemoryID, request.ExpectedVersion)
 	if err != nil {
 		return err
 	}
 	if count, _ := result.RowsAffected(); count == 1 {
 		return nil
 	}
-	if _, err := s.Get(ctx, id); err != nil {
+	if _, err := get(ctx, s.db, s.wid, request.MemoryID); err != nil {
 		return err
 	}
-	return ErrConflict
+	return protocol.ErrVersionConflict
 }
 
 func (s *Store) Clear(ctx context.Context) (int64, error) {
@@ -240,12 +241,12 @@ func (s *Store) Clear(ctx context.Context) (int64, error) {
 	return result.RowsAffected()
 }
 
-func (s *Store) Search(ctx context.Context, input SearchInput) ([]SearchHit, error) {
-	terms := words(input.Query)
-	if len(terms) == 0 && !hasFilter(input.Filter) {
-		return nil, fmt.Errorf("%w: query or filter is required", ErrInvalidRequest)
+func (s *Store) Search(ctx context.Context, request protocol.MemorySearchRequest) ([]protocol.MemorySearchHit, error) {
+	terms := words(request.Query)
+	if len(terms) == 0 && !hasFilter(request.Filter) {
+		return nil, fmt.Errorf("%w: query or filter is required", protocol.ErrInvalidRequest)
 	}
-	limit := input.Limit
+	limit := request.Limit
 	if limit <= 0 {
 		limit = 8
 	}
@@ -255,13 +256,13 @@ func (s *Store) Search(ctx context.Context, input SearchInput) ([]SearchHit, err
 	query, args := storesql.SearchMemory(storesql.SearchParams{
 		WorkspaceID:   s.wid,
 		Terms:         terms,
-		Types:         input.Filter.Types,
-		Scopes:        input.Filter.Scopes,
-		State:         string(Active),
-		CreatedAfter:  input.Filter.CreatedAfter,
-		CreatedBefore: input.Filter.CreatedBefore,
-		UpdatedAfter:  input.Filter.UpdatedAfter,
-		UpdatedBefore: input.Filter.UpdatedBefore,
+		Types:         request.Filter.Types,
+		Scopes:        request.Filter.Scopes,
+		State:         string(protocol.MemoryActive),
+		CreatedAfter:  request.Filter.CreatedAfter,
+		CreatedBefore: request.Filter.CreatedBefore,
+		UpdatedAfter:  request.Filter.UpdatedAfter,
+		UpdatedBefore: request.Filter.UpdatedBefore,
 		Limit:         limit,
 	})
 	rows, err := s.db.QueryContext(ctx, query, args...)
@@ -269,14 +270,14 @@ func (s *Store) Search(ctx context.Context, input SearchInput) ([]SearchHit, err
 		return nil, err
 	}
 	defer rows.Close()
-	hits := make([]SearchHit, 0, limit)
+	hits := make([]protocol.MemorySearchHit, 0, limit)
 	for rows.Next() {
 		item, err := scan(rows)
 		if err != nil {
 			return nil, err
 		}
 		score := wordScore(item, terms)
-		hits = append(hits, SearchHit{
+		hits = append(hits, protocol.MemorySearchHit{
 			ID: item.ID, Type: item.Type, Scope: item.Scope, State: item.State,
 			Version: item.Version, Snippet: snippet(item.Content), Score: score, UpdatedAt: item.UpdatedAt,
 		})
@@ -301,7 +302,7 @@ type sqlRunner interface {
 	QueryRowContext(context.Context, string, ...any) *stdsql.Row
 }
 
-func insert(ctx context.Context, db sqlRunner, item Memory) error {
+func insert(ctx context.Context, db sqlRunner, item protocol.Memory) error {
 	source, _ := json.Marshal(item.Source)
 	metadata, _ := json.Marshal(item.Metadata)
 	_, err := db.ExecContext(ctx, storesql.InsertMemory,
@@ -310,7 +311,7 @@ func insert(ctx context.Context, db sqlRunner, item Memory) error {
 	return err
 }
 
-func updateRow(ctx context.Context, db sqlRunner, item Memory, oldVersion int) error {
+func updateRow(ctx context.Context, db sqlRunner, item protocol.Memory, oldVersion int) error {
 	source, _ := json.Marshal(item.Source)
 	metadata, _ := json.Marshal(item.Metadata)
 	result, err := db.ExecContext(ctx, storesql.UpdateMemory,
@@ -320,29 +321,29 @@ func updateRow(ctx context.Context, db sqlRunner, item Memory, oldVersion int) e
 		return err
 	}
 	if count, _ := result.RowsAffected(); count != 1 {
-		return ErrConflict
+		return protocol.ErrVersionConflict
 	}
 	return nil
 }
 
-func get(ctx context.Context, db sqlRunner, wid int64, id string) (Memory, error) {
+func get(ctx context.Context, db sqlRunner, wid int64, id string) (protocol.Memory, error) {
 	return scan(db.QueryRowContext(ctx, storesql.SelectMemoryByID, wid, id))
 }
 
 type scanner interface{ Scan(...any) error }
 
-func scan(row scanner) (Memory, error) {
-	var item Memory
+func scan(row scanner) (protocol.Memory, error) {
+	var item protocol.Memory
 	var source, metadata, state, created, updated string
 	err := row.Scan(&item.ID, &item.WorkspaceID, &item.Content, &item.Type, &item.Scope, &source,
 		&metadata, &state, &item.Version, &item.Supersedes, &item.SupersededBy, &created, &updated)
 	if errors.Is(err, stdsql.ErrNoRows) {
-		return Memory{}, ErrNotFound
+		return protocol.Memory{}, protocol.ErrMemoryNotFound
 	}
 	if err != nil {
-		return Memory{}, err
+		return protocol.Memory{}, err
 	}
-	item.State = State(state)
+	item.State = protocol.MemoryState(state)
 	_ = json.Unmarshal([]byte(source), &item.Source)
 	_ = json.Unmarshal([]byte(metadata), &item.Metadata)
 	item.CreatedAt, _ = time.Parse(time.RFC3339Nano, created)
@@ -350,20 +351,20 @@ func scan(row scanner) (Memory, error) {
 	return item, nil
 }
 
-func cleanCreate(input CreateInput) (CreateInput, error) {
+func cleanCreate(input protocol.MemoryCreate) (protocol.MemoryCreate, error) {
 	input.Content = strings.TrimSpace(strings.ReplaceAll(input.Content, "\r\n", "\n"))
 	input.Type = strings.TrimSpace(input.Type)
 	input.Scope = strings.TrimSpace(input.Scope)
 	input.Source = cleanStrings(input.Source)
 	if input.Content == "" || !utf8.ValidString(input.Content) || len(input.Content) > 64*1024 {
-		return CreateInput{}, fmt.Errorf("%w: content must be valid UTF-8 and at most 64 KiB", ErrInvalidRequest)
+		return protocol.MemoryCreate{}, fmt.Errorf("%w: content must be valid UTF-8 and at most 64 KiB", protocol.ErrInvalidRequest)
 	}
 	if len(input.Type) > 128 || len(input.Scope) > 256 {
-		return CreateInput{}, fmt.Errorf("%w: type or scope is too long", ErrInvalidRequest)
+		return protocol.MemoryCreate{}, fmt.Errorf("%w: type or scope is too long", protocol.ErrInvalidRequest)
 	}
 	metadata, err := json.Marshal(input.Metadata)
 	if err != nil || len(metadata) > 16*1024 {
-		return CreateInput{}, fmt.Errorf("%w: invalid or oversized metadata", ErrInvalidRequest)
+		return protocol.MemoryCreate{}, fmt.Errorf("%w: invalid or oversized metadata", protocol.ErrInvalidRequest)
 	}
 	return input, nil
 }
@@ -391,12 +392,12 @@ func cleanStrings(values []string) []string {
 	return result
 }
 
-func hasFilter(filter Filter) bool {
+func hasFilter(filter protocol.MemoryFilter) bool {
 	return len(filter.Types) > 0 || len(filter.Scopes) > 0 ||
 		filter.CreatedAfter != nil || filter.CreatedBefore != nil || filter.UpdatedAfter != nil || filter.UpdatedBefore != nil
 }
 
-func wordScore(item Memory, terms []string) float64 {
+func wordScore(item protocol.Memory, terms []string) float64 {
 	if len(terms) == 0 {
 		return 0
 	}

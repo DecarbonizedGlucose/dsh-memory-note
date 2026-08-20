@@ -1,4 +1,4 @@
-module github.com/decglu/dsh-memory-note
+module github.com/DecarbonizedGlucose/dsh-memory-note
 
 go 1.26.5
 

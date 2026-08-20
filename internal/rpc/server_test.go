@@ -8,7 +8,8 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/decglu/dsh-memory-note/internal/meta"
+	"github.com/DecarbonizedGlucose/dsh-memory-note/internal/meta"
+	"github.com/DecarbonizedGlucose/dsh-memory-note/internal/protocol"
 )
 
 func testServer(t *testing.T) (Server, string) {
@@ -99,5 +100,22 @@ func TestStrictSubcommandProtocol(t *testing.T) {
 	_, err = server.WorkspaceDelete(context.Background(), `{"workspace_id":1,"delete_memory_db":false}`)
 	if err == nil {
 		t.Fatal("removed delete_memory_db field was accepted")
+	}
+}
+
+func TestServe(t *testing.T) {
+	server, _ := testServer(t)
+	ctx := context.Background()
+
+	result, err := server.Serve(ctx, []string{"workspace-register", `{"path":"."}`})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := result.(protocol.WorkspaceRegisterResponse); !ok {
+		t.Fatalf("unexpected response type %T", result)
+	}
+
+	if _, err := server.Serve(ctx, []string{"unknown", `{}`}); err == nil {
+		t.Fatal("expected unknown subcommand error")
 	}
 }
