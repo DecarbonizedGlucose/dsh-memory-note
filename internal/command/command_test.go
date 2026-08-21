@@ -1,0 +1,267 @@
+package command
+
+import (
+	"context"
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"testing"
+
+	"github.com/DecarbonizedGlucose/dsh-memory-note/internal/meta"
+	"github.com/DecarbonizedGlucose/dsh-memory-note/internal/protocol"
+)
+
+func TestWorkspaceAndMemoryLifecycle(t *testing.T) {
+	ctx := context.Background()
+	storeRoot := filepath.Join(t.TempDir(), "store")
+	firstPath := t.TempDir()
+	secondPath := t.TempDir()
+	thirdPath := t.TempDir()
+
+	// A read command on a fresh store initializes HOME and reports an
+	// unregistered workspace as null.
+	fresh := wantData[protocol.WorkspaceResolveData](t,
+		call(t, ctx, storeRoot, "workspace-resolve", map[string]any{"path": firstPath}))
+	if fresh.Workspace != nil {
+		t.Fatalf("resolve on fresh store = %#v", fresh)
+	}
+
+	registered := call(t, ctx, storeRoot, "workspace-register", map[string]any{"path": firstPath})
+	registerData := wantData[protocol.WorkspaceRegisterData](t, registered)
+	if registerData.Workspace.ID != 1 || !registerData.Created {
+		t.Fatalf("register data = %#v", registerData)
+	}
+	wid := registerData.Workspace.ID
+	wantError(t, call(t, ctx, storeRoot, "memory-create", map[string]any{"workspace_id": wid}), protocol.CodeInvalidRequest)
+
+	again := wantData[protocol.WorkspaceRegisterData](t,
+		call(t, ctx, storeRoot, "workspace-register", map[string]any{"path": firstPath}))
+	if again.Created || again.Workspace.ID != wid {
+		t.Fatalf("idempotent register = %#v", again)
+	}
+
+	created := wantData[protocol.MemoryCreateData](t, call(t, ctx, storeRoot, "memory-create", map[string]any{
+		"workspace_id": wid,
+		"content":      "Use SQLite for local storage.",
+		"type":         " decision ",
+		"scope":        "storage",
+		"source":       []string{" chat:1 ", "chat:1", ""},
+		"metadata":     map[string]any{"reason": "local", "optional": nil},
+	}))
+	item := created.Memory
+	if item.State != protocol.MemoryActive || item.Version != 1 || item.Type == nil || *item.Type != "decision" || len(item.Source) != 1 {
+		t.Fatalf("created memory = %#v", item)
+	}
+
+	got := wantData[protocol.MemoryGetData](t, call(t, ctx, storeRoot, "memory-get", map[string]any{
+		"workspace_id": wid, "memory_id": item.ID,
+	}))
+	if got.Memory.ID != item.ID || got.Memory.Metadata["optional"] != nil {
+		t.Fatalf("get data = %#v", got)
+	}
+
+	search := wantData[protocol.MemorySearchData](t, call(t, ctx, storeRoot, "memory-search", map[string]any{
+		"workspace_id": wid, "query": "sqlite missing", "filter": map[string]any{"types": []string{"decision"}},
+	}))
+	if len(search.Memories) != 1 || search.Memories[0].Score != 0.5 {
+		t.Fatalf("search data = %#v", search)
+	}
+
+	// Filter-only search has score 0, and ASCII case folding matches.
+	filterOnly := wantData[protocol.MemorySearchData](t, call(t, ctx, storeRoot, "memory-search", map[string]any{
+		"workspace_id": wid, "query": "SQLITE", "filter": map[string]any{"scopes": []string{"storage"}},
+	}))
+	if len(filterOnly.Memories) != 1 || filterOnly.Memories[0].Score != 1 {
+		t.Fatalf("filter-only search data = %#v", filterOnly)
+	}
+	scored := wantData[protocol.MemorySearchData](t, call(t, ctx, storeRoot, "memory-search", map[string]any{
+		"workspace_id": wid, "filter": map[string]any{"scopes": []string{"storage"}},
+	}))
+	if len(scored.Memories) != 1 || scored.Memories[0].Score != 0 {
+		t.Fatalf("filter-only score = %#v", scored)
+	}
+	wantError(t, call(t, ctx, storeRoot, "memory-search", map[string]any{
+		"workspace_id": wid, "filter": map[string]any{"types": []string{}},
+	}), protocol.CodeInvalidRequest)
+
+	updated := wantData[protocol.MemoryUpdateData](t, call(t, ctx, storeRoot, "memory-update", map[string]any{
+		"workspace_id": wid, "memory_id": item.ID, "expected_version": 1,
+		"content": "Use SQLite in WAL mode.", "type": "", "source": []string{}, "metadata": map[string]any{},
+	}))
+	item = updated.Memory
+	if item.Version != 2 || item.Type != nil || len(item.Source) != 0 || len(item.Metadata) != 0 {
+		t.Fatalf("updated memory = %#v", item)
+	}
+	wantError(t, call(t, ctx, storeRoot, "memory-update", map[string]any{
+		"workspace_id": wid, "memory_id": item.ID, "expected_version": 1, "scope": "other",
+	}), protocol.CodeVersionConflict)
+
+	superseded := wantData[protocol.MemorySupersedeData](t, call(t, ctx, storeRoot, "memory-supersede", map[string]any{
+		"workspace_id": wid, "memory_id": item.ID, "expected_version": 2,
+		"new": map[string]any{"content": "Use PostgreSQL for shared storage.", "type": "decision"},
+	}))
+	if superseded.Old.State != protocol.MemorySuperseded || superseded.Old.Version != 3 ||
+		superseded.New.Supersedes == nil || *superseded.New.Supersedes != item.ID {
+		t.Fatalf("supersede data = %#v", superseded)
+	}
+
+	deleted := wantData[protocol.MemoryDeleteData](t, call(t, ctx, storeRoot, "memory-delete", map[string]any{
+		"workspace_id": wid, "memory_id": item.ID, "expected_version": 3,
+	}))
+	if !deleted.Deleted {
+		t.Fatal("memory was not deleted")
+	}
+	newItem := wantData[protocol.MemoryGetData](t, call(t, ctx, storeRoot, "memory-get", map[string]any{
+		"workspace_id": wid, "memory_id": superseded.New.ID,
+	})).Memory
+	if newItem.Supersedes != nil || newItem.Version != 2 {
+		t.Fatalf("relationship cleanup = %#v", newItem)
+	}
+
+	invalidated := wantData[protocol.MemoryInvalidateData](t, call(t, ctx, storeRoot, "memory-invalidate", map[string]any{
+		"workspace_id": wid, "memory_id": newItem.ID, "expected_version": 2,
+	})).Memory
+	if invalidated.State != protocol.MemoryInvalid || invalidated.Version != 3 {
+		t.Fatalf("invalidated memory = %#v", invalidated)
+	}
+	wantError(t, call(t, ctx, storeRoot, "memory-invalidate", map[string]any{
+		"workspace_id": wid, "memory_id": newItem.ID, "expected_version": 3,
+	}), protocol.CodeInvalidMemoryState)
+	search = wantData[protocol.MemorySearchData](t, call(t, ctx, storeRoot, "memory-search", map[string]any{
+		"workspace_id": wid, "query": "PostgreSQL",
+	}))
+	if len(search.Memories) != 0 {
+		t.Fatalf("search returned inactive memory: %#v", search)
+	}
+
+	// memory-list sees every state as compact rows without content.
+	listed := wantData[protocol.MemoryListData](t, call(t, ctx, storeRoot, "memory-list", map[string]any{"workspace_id": wid}))
+	if len(listed.Memories) != 1 || listed.Memories[0].ID != newItem.ID || listed.Memories[0].State != protocol.MemoryInvalid || listed.NextCursor != nil {
+		t.Fatalf("list data = %#v", listed)
+	}
+
+	rebound := wantData[protocol.WorkspaceRebindData](t, call(t, ctx, storeRoot, "workspace-rebind", map[string]any{
+		"workspace_id": wid, "path": secondPath,
+	}))
+	if rebound.Workspace.Path != secondPath {
+		t.Fatalf("rebind data = %#v", rebound)
+	}
+	cleared := wantData[protocol.WorkspaceClearData](t, call(t, ctx, storeRoot, "workspace-clear", map[string]any{"workspace_id": wid}))
+	if cleared.DeletedCount != 1 {
+		t.Fatalf("clear data = %#v", cleared)
+	}
+	wantData[protocol.WorkspaceDeleteData](t, call(t, ctx, storeRoot, "workspace-delete", map[string]any{"workspace_id": wid}))
+
+	next := wantData[protocol.WorkspaceRegisterData](t,
+		call(t, ctx, storeRoot, "workspace-register", map[string]any{"path": thirdPath}))
+	if next.Workspace.ID != 2 {
+		t.Fatalf("workspace ID was reused: %#v", next)
+	}
+}
+
+func TestMemoryListPagination(t *testing.T) {
+	ctx := context.Background()
+	storeRoot := filepath.Join(t.TempDir(), "store")
+	project := t.TempDir()
+	wid := wantData[protocol.WorkspaceRegisterData](t,
+		call(t, ctx, storeRoot, "workspace-register", map[string]any{"path": project})).Workspace.ID
+	for index := 0; index < 3; index++ {
+		wantData[protocol.MemoryCreateData](t, call(t, ctx, storeRoot, "memory-create", map[string]any{
+			"workspace_id": wid, "content": "memory number", "scope": string(rune('a' + index)),
+		}))
+	}
+	first := wantData[protocol.MemoryListData](t, call(t, ctx, storeRoot, "memory-list", map[string]any{
+		"workspace_id": wid, "limit": 2,
+	}))
+	if len(first.Memories) != 2 || first.NextCursor == nil {
+		t.Fatalf("first page = %#v", first)
+	}
+	second := wantData[protocol.MemoryListData](t, call(t, ctx, storeRoot, "memory-list", map[string]any{
+		"workspace_id": wid, "limit": 2, "cursor": *first.NextCursor,
+	}))
+	if len(second.Memories) != 1 || second.NextCursor != nil {
+		t.Fatalf("second page = %#v", second)
+	}
+	wantError(t, call(t, ctx, storeRoot, "memory-list", map[string]any{
+		"workspace_id": wid, "cursor": "garbage",
+	}), protocol.CodeInvalidRequest)
+}
+
+func TestUnexpectedMemoryFileFailsClosed(t *testing.T) {
+	ctx := context.Background()
+	storeRoot := filepath.Join(t.TempDir(), "store")
+	project := t.TempDir()
+	wantData[protocol.WorkspaceRegisterData](t,
+		call(t, ctx, storeRoot, "workspace-register", map[string]any{"path": project}))
+	if err := os.WriteFile(filepath.Join(storeRoot, "memory", "residue"), []byte("partial"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	wantError(t, call(t, ctx, storeRoot, "workspace-resolve", map[string]any{"path": project}), protocol.CodeWorkspaceBroken)
+}
+
+func TestWorkspaceDeleteCleansBrokenWorkspace(t *testing.T) {
+	ctx := context.Background()
+	storeRoot := filepath.Join(t.TempDir(), "store")
+	project := t.TempDir()
+	wid := wantData[protocol.WorkspaceRegisterData](t,
+		call(t, ctx, storeRoot, "workspace-register", map[string]any{"path": project})).Workspace.ID
+	memoryDB := filepath.Join(storeRoot, "memory", "workspace-1-memory.db")
+	if err := os.Remove(memoryDB); err != nil {
+		t.Fatal(err)
+	}
+	// Memory commands see the broken workspace; delete is the cleanup path.
+	wantError(t, call(t, ctx, storeRoot, "memory-get", map[string]any{
+		"workspace_id": wid, "memory_id": "mem_x",
+	}), protocol.CodeWorkspaceBroken)
+	wantData[protocol.WorkspaceDeleteData](t, call(t, ctx, storeRoot, "workspace-delete", map[string]any{"workspace_id": wid}))
+}
+
+func TestWorkspaceLockReturnsBusy(t *testing.T) {
+	ctx := context.Background()
+	storeRoot := filepath.Join(t.TempDir(), "store")
+	project := t.TempDir()
+	wid := wantData[protocol.WorkspaceRegisterData](t,
+		call(t, ctx, storeRoot, "workspace-register", map[string]any{"path": project})).Workspace.ID
+
+	store, err := meta.Open(ctx, storeRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.Lock(ctx, wid, "write", "test-session"); err != nil {
+		t.Fatal(err)
+	}
+	defer store.Unlock(ctx, wid, "test-session")
+
+	wantError(t, call(t, ctx, storeRoot, "memory-create", map[string]any{
+		"workspace_id": wid, "content": "blocked",
+	}), protocol.CodeWorkspaceBusy)
+}
+
+func call(t *testing.T, ctx context.Context, storeRoot, name string, request any) protocol.Response {
+	t.Helper()
+	raw, err := json.Marshal(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return Run(ctx, storeRoot, "test-session", name, string(raw))
+}
+
+func wantData[T any](t *testing.T, response protocol.Response) T {
+	t.Helper()
+	if !response.OK {
+		t.Fatalf("unexpected error response: %#v", response.Error)
+	}
+	data, ok := response.Data.(T)
+	if !ok {
+		t.Fatalf("data type = %T", response.Data)
+	}
+	return data
+}
+
+func wantError(t *testing.T, response protocol.Response, code string) {
+	t.Helper()
+	if response.OK || response.Error == nil || response.Error.Code != code {
+		t.Fatalf("response = %#v, want error %q", response, code)
+	}
+}

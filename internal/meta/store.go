@@ -1,10 +1,11 @@
+// Package meta stores workspace identities and owns the per-WID cross-process
+// read/write locks.
 package meta
 
 import (
 	"context"
 	stdsql "database/sql"
 	"errors"
-	"fmt"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -13,241 +14,489 @@ import (
 
 	_ "modernc.org/sqlite"
 
-	"github.com/DecarbonizedGlucose/dsh-memory-note/internal/data"
+	"github.com/DecarbonizedGlucose/dsh-memory-note/internal/home"
 	"github.com/DecarbonizedGlucose/dsh-memory-note/internal/protocol"
-	storesql "github.com/DecarbonizedGlucose/dsh-memory-note/internal/store/sql"
+	"github.com/DecarbonizedGlucose/dsh-memory-note/internal/statements"
 )
 
-type Workspace struct {
-	ID        int64
-	Path      string
-	CreatedAt time.Time
-	UpdatedAt time.Time
-}
+const applicationVersion = "1.0"
+
+const (
+	lockTTL      = 30 * time.Second
+	lockWaitTime = 5 * time.Second
+	lockRetry    = 25 * time.Millisecond
+)
+
+var errNotInitialized = errors.New("store is not initialized")
+var errLockConflict = errors.New("workspace lock conflict")
 
 type Store struct {
 	db *stdsql.DB
 }
 
-func Open(ctx context.Context, path string) (*Store, error) {
-	dsn := (&url.URL{Scheme: "file", Path: path}).String()
-	db, err := stdsql.Open("sqlite", dsn)
+func InitRoot(ctx context.Context, storeRoot string) (bool, error) {
+	if err := CheckRoot(storeRoot); err == nil {
+		return false, nil
+	} else if !errors.Is(err, errNotInitialized) {
+		return false, err
+	}
+	parent := filepath.Dir(storeRoot)
+	if err := os.MkdirAll(parent, 0o700); err != nil {
+		return false, internalError("cannot create store parent")
+	}
+	temp, err := os.MkdirTemp(parent, ".dsh-memory-note-init-")
 	if err != nil {
-		return nil, fmt.Errorf("open meta db: %w", err)
-	}
-	db.SetMaxOpenConns(1)
-	store := &Store{db: db}
-	if err := store.init(ctx); err != nil {
-		db.Close()
-		return nil, err
-	}
-	_ = os.Chmod(path, 0o600)
-	return store, nil
-}
-
-func (s *Store) Close() error { return s.db.Close() }
-
-func (s *Store) init(ctx context.Context) error {
-	queries := append(append([]string{}, storesql.Setup...), storesql.MetaSchema...)
-	for _, query := range queries {
-		if _, err := s.db.ExecContext(ctx, query); err != nil {
-			return fmt.Errorf("init meta db: %w", err)
-		}
-	}
-	return nil
-}
-
-// PrepareHome creates a new data home or validates an existing one.
-// Existing incomplete homes are never repaired automatically.
-func PrepareHome(ctx context.Context, home, initID string) (bool, error) {
-	info, err := os.Stat(home)
-	if err == nil {
-		if !info.IsDir() {
-			return false, protocol.ErrHomeBroken
-		}
-		return false, checkHome(home)
-	}
-	if !errors.Is(err, os.ErrNotExist) {
-		return false, fmt.Errorf("check data home: %w", err)
-	}
-	if err := os.MkdirAll(filepath.Dir(home), 0o700); err != nil {
-		return false, fmt.Errorf("create data parent: %w", err)
-	}
-	temp := home + ".init-" + initID
-	if err := os.Mkdir(temp, 0o700); err != nil {
-		return false, fmt.Errorf("create temporary data home: %w", err)
+		return false, internalError("cannot create temporary store")
 	}
 	defer os.RemoveAll(temp)
-	if err := os.Mkdir(data.MemoryDir(temp), 0o700); err != nil {
-		return false, fmt.Errorf("create memory directory: %w", err)
+	if err := os.Chmod(temp, 0o700); err != nil {
+		return false, internalError("cannot protect temporary store")
 	}
-	store, err := Open(ctx, data.MetaDB(temp))
+	if err := os.Mkdir(home.MemoryDir(temp), 0o700); err != nil {
+		return false, internalError("cannot create memory directory")
+	}
+	store, err := create(ctx, home.MetaDB(temp))
 	if err != nil {
 		return false, err
 	}
 	if err := store.Close(); err != nil {
+		return false, internalError("cannot close meta database")
+	}
+	if err := syncPath(home.MetaDB(temp)); err != nil {
 		return false, err
 	}
-	if err := os.Rename(temp, home); err != nil {
-		// Another one-shot process may have initialized the same home.
-		if checkErr := checkHome(home); checkErr == nil {
+	if err := syncPath(temp); err != nil {
+		return false, err
+	}
+	if err := os.Rename(temp, storeRoot); err != nil {
+		if checkErr := CheckRoot(storeRoot); checkErr == nil {
 			return false, nil
 		}
-		return false, fmt.Errorf("install data home: %w", err)
+		return false, internalError("cannot publish store")
+	}
+	if err := syncPath(parent); err != nil {
+		return false, err
 	}
 	return true, nil
 }
 
-func checkHome(home string) error {
-	metaInfo, metaErr := os.Stat(data.MetaDB(home))
-	memoryInfo, memoryErr := os.Stat(data.MemoryDir(home))
-	if metaErr != nil || memoryErr != nil || !metaInfo.Mode().IsRegular() || !memoryInfo.IsDir() {
-		return protocol.ErrHomeBroken
+func CheckRoot(storeRoot string) error {
+	root, err := os.Lstat(storeRoot)
+	if errors.Is(err, os.ErrNotExist) {
+		return errNotInitialized
+	}
+	if err != nil || !root.IsDir() || root.Mode()&os.ModeSymlink != 0 {
+		return protocol.NewError(protocol.CodeHomeBroken, "HOME is not a trusted directory")
+	}
+	metaInfo, metaErr := os.Lstat(home.MetaDB(storeRoot))
+	memoryInfo, memoryErr := os.Lstat(home.MemoryDir(storeRoot))
+	if metaErr != nil || memoryErr != nil || !metaInfo.Mode().IsRegular() || metaInfo.Mode()&os.ModeSymlink != 0 ||
+		!memoryInfo.IsDir() || memoryInfo.Mode()&os.ModeSymlink != 0 {
+		return protocol.NewError(protocol.CodeHomeBroken, "HOME structure is incomplete")
 	}
 	return nil
 }
 
-func (s *Store) Register(ctx context.Context, path string) (Workspace, bool, error) {
-	path, err := cleanPath(path)
-	if err != nil {
-		return Workspace{}, false, err
-	}
-	if current, err := s.FindPath(ctx, path); err == nil {
-		return current, false, nil
-	} else if !errors.Is(err, protocol.ErrWorkspaceNotFound) {
-		return Workspace{}, false, err
-	}
-	now := time.Now().UTC()
-	result, err := s.db.ExecContext(ctx, storesql.InsertWorkspace, path, stamp(now), stamp(now))
-	if err != nil {
-		// Another process may have registered the same path.
-		if current, findErr := s.FindPath(ctx, path); findErr == nil {
-			return current, false, nil
+func Open(ctx context.Context, storeRoot string) (*Store, error) {
+	if err := CheckRoot(storeRoot); err != nil {
+		if errors.Is(err, errNotInitialized) {
+			return nil, protocol.NewError(protocol.CodeHomeBroken, "HOME is not initialized")
 		}
-		return Workspace{}, false, fmt.Errorf("register workspace: %w", err)
+		return nil, err
 	}
-	id, err := result.LastInsertId()
+	db, err := openDB(home.MetaDB(storeRoot), "rw")
 	if err != nil {
-		return Workspace{}, false, fmt.Errorf("read workspace id: %w", err)
+		return nil, protocol.NewError(protocol.CodeHomeBroken, "meta database cannot be opened")
 	}
-	return Workspace{ID: id, Path: path, CreatedAt: now, UpdatedAt: now}, true, nil
+	store := &Store{db: db}
+	for _, query := range statements.Setup {
+		if _, err := db.ExecContext(ctx, query); err != nil {
+			db.Close()
+			return nil, sqliteError(err, protocol.CodeHomeBroken, "meta database cannot be configured")
+		}
+	}
+	if err := checkHeader(ctx, db); err != nil {
+		db.Close()
+		return nil, err
+	}
+	return store, nil
 }
 
-func (s *Store) Find(ctx context.Context, id int64) (Workspace, error) {
-	return scanWorkspace(s.db.QueryRowContext(ctx, storesql.SelectWorkspace, id))
+func create(ctx context.Context, path string) (*Store, error) {
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, internalError("cannot create meta database")
+	}
+	if err := file.Close(); err != nil {
+		return nil, internalError("cannot close new meta database")
+	}
+	db, err := openDB(path, "rw")
+	if err != nil {
+		return nil, internalError("cannot open new meta database")
+	}
+	store := &Store{db: db}
+	queries := append([]string{}, statements.Setup...)
+	queries = append(queries, statements.MetaSchema...)
+	for _, query := range queries {
+		if _, err := db.ExecContext(ctx, query); err != nil {
+			db.Close()
+			return nil, internalError("cannot initialize meta database")
+		}
+	}
+	if _, err := db.ExecContext(ctx, statements.InsertMetaInfo, applicationVersion); err != nil {
+		db.Close()
+		return nil, internalError("cannot write meta database header")
+	}
+	return store, nil
 }
 
-func (s *Store) FindPath(ctx context.Context, path string) (Workspace, error) {
-	path, err := cleanPath(path)
+func openDB(path, mode string) (*stdsql.DB, error) {
+	uri := (&url.URL{Scheme: "file", Path: path, RawQuery: "mode=" + mode}).String()
+	db, err := stdsql.Open("sqlite", uri)
 	if err != nil {
-		return Workspace{}, err
+		return nil, err
 	}
-	return scanWorkspace(s.db.QueryRowContext(ctx, storesql.SelectWorkspaceByPath, path))
+	db.SetMaxOpenConns(1)
+	return db, nil
 }
 
-func (s *Store) Rebind(ctx context.Context, id int64, path string) (Workspace, error) {
-	path, err := cleanPath(path)
-	if err != nil {
-		return Workspace{}, err
+func checkHeader(ctx context.Context, db *stdsql.DB) error {
+	var applicationID, schemaVersion, recordedVersion int
+	if err := db.QueryRowContext(ctx, statements.ReadApplicationID).Scan(&applicationID); err != nil || applicationID != statements.MetaApplicationID {
+		return protocol.NewError(protocol.CodeHomeBroken, "meta database application ID is invalid")
 	}
-	now := time.Now().UTC()
-	result, err := s.db.ExecContext(ctx, storesql.UpdateWorkspacePath, path, stamp(now), id)
-	if err != nil {
-		return Workspace{}, protocol.ErrWorkspacePathUsed
+	if err := db.QueryRowContext(ctx, statements.ReadSchemaVersion).Scan(&schemaVersion); err != nil {
+		return protocol.NewError(protocol.CodeHomeBroken, "meta schema version is unreadable")
 	}
-	if count, _ := result.RowsAffected(); count != 1 {
-		return Workspace{}, protocol.ErrWorkspaceNotFound
+	if schemaVersion != statements.SchemaVersion {
+		return protocol.NewError(protocol.CodeSchemaMismatch, "meta schema version is not supported")
 	}
-	return s.Find(ctx, id)
-}
-
-func (s *Store) Delete(ctx context.Context, id int64) error {
-	result, err := s.db.ExecContext(ctx, storesql.DeleteWorkspace, id)
-	if err != nil {
-		return err
-	}
-	if count, _ := result.RowsAffected(); count != 1 {
-		return protocol.ErrWorkspaceNotFound
+	if err := db.QueryRowContext(ctx, statements.ReadMetaInfo).Scan(&recordedVersion); err != nil || recordedVersion != statements.SchemaVersion {
+		return protocol.NewError(protocol.CodeHomeBroken, "meta database header is invalid")
 	}
 	return nil
 }
 
-type Lock struct {
-	store *Store
-	wid   int64
-	owner string
-}
+func (s *Store) Close() error { return s.db.Close() }
 
-// LockRead allows other readers. LockWrite waits until no other lock exists.
-func (s *Store) LockRead(ctx context.Context, wid int64, owner string) (*Lock, error) {
-	return s.lock(ctx, wid, owner, "read")
-}
-
-func (s *Store) LockWrite(ctx context.Context, wid int64, owner string) (*Lock, error) {
-	return s.lock(ctx, wid, owner, "write")
-}
-
-func (s *Store) lock(ctx context.Context, wid int64, owner, mode string) (*Lock, error) {
-	if strings.TrimSpace(owner) == "" {
-		return nil, fmt.Errorf("lock owner is required")
-	}
-	deadline := time.Now().Add(2 * time.Second)
+// Lock acquires a per-WID read or write lock for the given session, waiting
+// up to lockWaitTime. It returns workspace_busy on timeout.
+func (s *Store) Lock(ctx context.Context, workspaceID int64, mode, sessionID string) error {
+	deadline := time.Now().Add(lockWaitTime)
 	for {
-		now := time.Now()
-		_, _ = s.db.ExecContext(ctx, storesql.DeleteExpiredLocks, now.UnixMilli())
-		query := storesql.InsertWorkspaceLock(mode == "write")
-		result, err := s.db.ExecContext(ctx, query,
-			wid, owner, mode, now.Add(15*time.Second).UnixMilli(), wid, wid)
-		if err != nil {
-			return nil, fmt.Errorf("lock workspace: %w", err)
+		err := s.tryLock(ctx, workspaceID, mode, sessionID)
+		if err == nil {
+			return nil
 		}
-		if count, _ := result.RowsAffected(); count == 1 {
-			return &Lock{store: s, wid: wid, owner: owner}, nil
-		}
-		if _, err := s.Find(ctx, wid); err != nil {
-			return nil, err
+		if !errors.Is(err, errLockConflict) {
+			return err
 		}
 		if time.Now().After(deadline) {
-			return nil, protocol.ErrWorkspaceBusy
+			return protocol.NewError(protocol.CodeWorkspaceBusy, "workspace lock is held by another process")
 		}
 		select {
 		case <-ctx.Done():
-			return nil, ctx.Err()
-		case <-time.After(20 * time.Millisecond):
+			return protocol.NewError(protocol.CodeWorkspaceBusy, "workspace lock wait was interrupted")
+		case <-time.After(lockRetry):
 		}
 	}
 }
 
-func (l *Lock) Release(ctx context.Context) error {
-	_, err := l.store.db.ExecContext(ctx, storesql.DeleteWorkspaceLock, l.wid, l.owner)
-	return err
-}
-
-func cleanPath(path string) (string, error) {
-	if path == "" {
-		return "", fmt.Errorf("path is required")
-	}
-	abs, err := filepath.Abs(path)
+func (s *Store) tryLock(ctx context.Context, workspaceID int64, mode, sessionID string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return "", fmt.Errorf("make path absolute: %w", err)
+		return internalError("cannot begin lock transaction")
 	}
-	return filepath.Clean(abs), nil
+	defer tx.Rollback()
+	now := time.Now().Unix()
+	if _, err := tx.ExecContext(ctx, statements.DeleteExpiredLocks, now); err != nil {
+		return internalError("cannot reclaim expired locks")
+	}
+	if mode == "write" {
+		if err := checkLockConflict(ctx, tx, statements.SelectAnyLock, workspaceID, now); err != nil {
+			return err
+		}
+	} else {
+		if err := checkLockConflict(ctx, tx, statements.SelectWriteLock, workspaceID, now); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.ExecContext(ctx, statements.InsertLock, workspaceID, mode, sessionID, now, now+int64(lockTTL.Seconds())); err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "unique") {
+			return errLockConflict
+		}
+		return internalError("cannot acquire workspace lock")
+	}
+	if err := tx.Commit(); err != nil {
+		return internalError("cannot commit workspace lock")
+	}
+	return nil
 }
 
-func stamp(value time.Time) string { return value.Format(time.RFC3339Nano) }
-
-type rowScanner interface{ Scan(...any) error }
-
-func scanWorkspace(row rowScanner) (Workspace, error) {
-	var workspace Workspace
-	var created, updated string
-	if err := row.Scan(&workspace.ID, &workspace.Path, &created, &updated); err != nil {
-		if errors.Is(err, stdsql.ErrNoRows) {
-			return Workspace{}, protocol.ErrWorkspaceNotFound
-		}
-		return Workspace{}, err
+func checkLockConflict(ctx context.Context, tx *stdsql.Tx, query string, workspaceID, now int64) error {
+	var found int
+	err := tx.QueryRowContext(ctx, query, workspaceID, now).Scan(&found)
+	if errors.Is(err, stdsql.ErrNoRows) {
+		return nil
 	}
-	workspace.CreatedAt, _ = time.Parse(time.RFC3339Nano, created)
-	workspace.UpdatedAt, _ = time.Parse(time.RFC3339Nano, updated)
+	if err != nil {
+		return internalError("cannot inspect workspace locks")
+	}
+	return errLockConflict
+}
+
+// RenewWriteLock verifies that the session still owns its write lock and
+// extends the lease. It must be called before starting a modifying memory
+// transaction; losing ownership aborts the operation.
+func (s *Store) RenewWriteLock(ctx context.Context, workspaceID int64, sessionID string) error {
+	now := time.Now().Unix()
+	result, err := s.db.ExecContext(ctx, statements.RenewLock, now+int64(lockTTL.Seconds()), workspaceID, sessionID, now)
+	if err != nil {
+		return internalError("cannot renew workspace lock")
+	}
+	if count, err := result.RowsAffected(); err != nil || count != 1 {
+		return protocol.NewError(protocol.CodeInternal, "workspace lock ownership was lost")
+	}
+	return nil
+}
+
+func (s *Store) Unlock(ctx context.Context, workspaceID int64, sessionID string) error {
+	if _, err := s.db.ExecContext(ctx, statements.DeleteLock, workspaceID, sessionID); err != nil {
+		return internalError("cannot release workspace lock")
+	}
+	return nil
+}
+
+func (s *Store) Workspace(ctx context.Context, id int64) (protocol.Workspace, error) {
+	tx, err := s.db.BeginTx(ctx, &stdsql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return protocol.Workspace{}, internalError("cannot begin meta read")
+	}
+	defer tx.Rollback()
+	workspace, err := scanWorkspace(tx.QueryRowContext(ctx, statements.SelectWorkspace, id))
+	if err != nil {
+		return protocol.Workspace{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return protocol.Workspace{}, internalError("cannot finish meta read")
+	}
 	return workspace, nil
+}
+
+func (s *Store) Resolve(ctx context.Context, path string) (*protocol.Workspace, error) {
+	tx, err := s.db.BeginTx(ctx, &stdsql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return nil, internalError("cannot begin meta read")
+	}
+	defer tx.Rollback()
+	workspace, err := scanWorkspace(tx.QueryRowContext(ctx, statements.SelectWorkspaceByPath, path))
+	if appError, ok := err.(*protocol.Error); ok && appError.Code == protocol.CodeWorkspaceNotFound {
+		if commitErr := tx.Commit(); commitErr != nil {
+			return nil, internalError("cannot finish meta read")
+		}
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, internalError("cannot finish meta read")
+	}
+	return &workspace, nil
+}
+
+func (s *Store) Workspaces(ctx context.Context) ([]protocol.Workspace, error) {
+	tx, err := s.db.BeginTx(ctx, &stdsql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return nil, internalError("cannot begin meta read")
+	}
+	defer tx.Rollback()
+	rows, err := tx.QueryContext(ctx, statements.SelectAllWorkspaces)
+	if err != nil {
+		return nil, internalError("cannot list workspaces")
+	}
+	defer rows.Close()
+	result := make([]protocol.Workspace, 0)
+	for rows.Next() {
+		workspace, err := scanWorkspace(rows)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, workspace)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, internalError("cannot read workspaces")
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, internalError("cannot finish meta read")
+	}
+	return result, nil
+}
+
+func (s *Store) Register(ctx context.Context, path string) (protocol.Workspace, bool, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return protocol.Workspace{}, false, internalError("cannot begin workspace registration")
+	}
+	defer tx.Rollback()
+	if existing, err := scanWorkspace(tx.QueryRowContext(ctx, statements.SelectWorkspaceByPath, path)); err == nil {
+		if commitErr := tx.Commit(); commitErr != nil {
+			return protocol.Workspace{}, false, internalError("cannot finish workspace registration")
+		}
+		return existing, false, nil
+	} else if appError, ok := err.(*protocol.Error); !ok || appError.Code != protocol.CodeWorkspaceNotFound {
+		return protocol.Workspace{}, false, err
+	}
+	now := time.Now()
+	nowOffset := offsetMinutes(now)
+	result, err := tx.ExecContext(ctx, statements.InsertWorkspace, path, now.Unix(), nowOffset, now.Unix(), nowOffset)
+	if err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "unique") {
+			// A concurrent registrar won the path; release the connection and
+			// report the existing mapping.
+			_ = tx.Rollback()
+			existing, resolveErr := s.Resolve(ctx, path)
+			if resolveErr != nil {
+				return protocol.Workspace{}, false, resolveErr
+			}
+			if existing == nil {
+				return protocol.Workspace{}, false, internalError("cannot finish workspace registration")
+			}
+			return *existing, false, nil
+		}
+		return protocol.Workspace{}, false, internalError("cannot register workspace")
+	}
+	id, err := result.LastInsertId()
+	if err != nil || id < 1 || id > protocol.MaxSafeInteger {
+		return protocol.Workspace{}, false, internalError("cannot allocate workspace ID")
+	}
+	if err := tx.Commit(); err != nil {
+		return protocol.Workspace{}, false, internalError("cannot finish workspace registration")
+	}
+	return protocol.Workspace{ID: id, Path: path, CreatedAt: timestamp(now), UpdatedAt: timestamp(now)}, true, nil
+}
+
+func (s *Store) Rebind(ctx context.Context, id int64, path string) (protocol.Workspace, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return protocol.Workspace{}, internalError("cannot begin workspace rebind")
+	}
+	defer tx.Rollback()
+	workspace, err := scanWorkspace(tx.QueryRowContext(ctx, statements.SelectWorkspace, id))
+	if err != nil {
+		return protocol.Workspace{}, err
+	}
+	if workspace.Path == path {
+		if commitErr := tx.Commit(); commitErr != nil {
+			return protocol.Workspace{}, internalError("cannot finish workspace rebind")
+		}
+		return workspace, nil
+	}
+	if _, err := scanWorkspace(tx.QueryRowContext(ctx, statements.SelectWorkspaceByPath, path)); err == nil {
+		return protocol.Workspace{}, protocol.NewError(protocol.CodeWorkspacePathUsed, "workspace path is already registered")
+	} else if appError, ok := err.(*protocol.Error); !ok || appError.Code != protocol.CodeWorkspaceNotFound {
+		return protocol.Workspace{}, err
+	}
+	now := time.Now()
+	if _, err := tx.ExecContext(ctx, statements.UpdateWorkspacePath, path, now.Unix(), offsetMinutes(now), id); err != nil {
+		return protocol.Workspace{}, internalError("cannot rebind workspace")
+	}
+	if err := tx.Commit(); err != nil {
+		return protocol.Workspace{}, internalError("cannot finish workspace rebind")
+	}
+	workspace.Path, workspace.UpdatedAt = path, timestamp(now)
+	return workspace, nil
+}
+
+func (s *Store) DeleteWorkspace(ctx context.Context, id int64) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return internalError("cannot begin workspace deletion")
+	}
+	defer tx.Rollback()
+	result, err := tx.ExecContext(ctx, statements.DeleteWorkspace, id)
+	if err != nil {
+		return internalError("cannot delete workspace")
+	}
+	if count, _ := result.RowsAffected(); count != 1 {
+		return protocol.NewError(protocol.CodeWorkspaceNotFound, "workspace not found")
+	}
+	if err := tx.Commit(); err != nil {
+		return internalError("cannot finish workspace deletion")
+	}
+	return nil
+}
+
+type scanner interface{ Scan(...any) error }
+
+func scanWorkspace(row scanner) (protocol.Workspace, error) {
+	var workspace protocol.Workspace
+	var created, createdOffset, updated, updatedOffset int64
+	if err := row.Scan(&workspace.ID, &workspace.Path, &created, &createdOffset, &updated, &updatedOffset); err != nil {
+		if errors.Is(err, stdsql.ErrNoRows) {
+			return protocol.Workspace{}, protocol.NewError(protocol.CodeWorkspaceNotFound, "workspace not found")
+		}
+		return protocol.Workspace{}, internalError("cannot read workspace")
+	}
+	if workspace.ID < 1 || workspace.ID > protocol.MaxSafeInteger ||
+		createdOffset < -840 || createdOffset > 840 || updatedOffset < -840 || updatedOffset > 840 ||
+		!filepath.IsAbs(workspace.Path) || filepath.Clean(workspace.Path) != workspace.Path {
+		return protocol.Workspace{}, protocol.NewError(protocol.CodeHomeBroken, "workspace row is invalid")
+	}
+	workspace.CreatedAt = timestampAt(created, createdOffset)
+	workspace.UpdatedAt = timestampAt(updated, updatedOffset)
+	return workspace, nil
+}
+
+func CanonicalPath(path string) (string, error) {
+	if !filepath.IsAbs(path) {
+		return "", protocol.Invalid("workspace path must be absolute")
+	}
+	cleaned := filepath.Clean(path)
+	info, err := os.Stat(cleaned)
+	if err != nil {
+		return "", protocol.Invalid("workspace path does not exist")
+	}
+	if !info.IsDir() {
+		return "", protocol.Invalid("workspace path must be a directory")
+	}
+	resolved, err := filepath.EvalSymlinks(cleaned)
+	if err != nil {
+		return "", protocol.Invalid("workspace path cannot be resolved")
+	}
+	return filepath.Clean(resolved), nil
+}
+
+func sqliteError(err error, fallbackCode, message string) error {
+	text := strings.ToLower(err.Error())
+	if strings.Contains(text, "busy") || strings.Contains(text, "locked") {
+		return protocol.NewError(protocol.CodeWorkspaceBusy, "another command is using the store")
+	}
+	return protocol.NewError(fallbackCode, message)
+}
+
+func internalError(message string) error { return protocol.NewError(protocol.CodeInternal, message) }
+
+func syncPath(path string) error {
+	file, err := os.Open(path)
+	if err != nil {
+		return internalError("cannot open path for sync")
+	}
+	defer file.Close()
+	if err := file.Sync(); err != nil {
+		return internalError("cannot sync store")
+	}
+	return nil
+}
+
+func timestamp(value time.Time) protocol.Timestamp { return protocol.Timestamp{Time: value} }
+
+func timestampAt(epochSeconds, offsetMinutes int64) protocol.Timestamp {
+	location := time.FixedZone("", int(offsetMinutes)*60)
+	return protocol.Timestamp{Time: time.Unix(epochSeconds, 0).In(location)}
+}
+
+func offsetMinutes(value time.Time) int64 {
+	_, offset := value.Zone()
+	return int64(offset / 60)
 }

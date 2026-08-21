@@ -16,28 +16,28 @@ const version = "1.0"
 const usageText = `usage: dsh-memory-note <subcommand> <json request>
 
 subcommands:
-
+    workspace-resolve
+    workspace-register
+    workspace-rebind
+    workspace-clear
+    workspace-delete
     memory-search
+    memory-list
     memory-get
     memory-create
     memory-update
     memory-supersede
     memory-invalidate
     memory-delete
-    workspace-register
-    workspace-rebind
-    workspace-clear
-    workspace-delete
 
     version
     help
 `
 
 func main() {
-	exitCode := 0
 	if len(os.Args) == 2 {
 		if os.Args[1] == "version" {
-			fmt.Fprintln(os.Stderr, version)
+			fmt.Println(version)
 			return
 		}
 		if os.Args[1] == "help" {
@@ -47,33 +47,31 @@ func main() {
 	}
 	if len(os.Args) != 3 {
 		fmt.Fprint(os.Stderr, usageText)
-		os.Exit(1)
+		os.Exit(2)
 	}
 
-	result, err := run(os.Args[1:])
-	reply := protocol.Success(result)
-	if err != nil {
-		reply = protocol.Failure(err)
-		exitCode = 1
-	}
+	reply := run(os.Args[1], os.Args[2])
 	encoder := json.NewEncoder(os.Stdout)
 	encoder.SetEscapeHTML(false)
 	if encodeErr := encoder.Encode(reply); encodeErr != nil {
 		fmt.Fprintln(os.Stderr, "encode response:", encodeErr)
+		os.Exit(2)
+	}
+	if !reply.OK {
 		os.Exit(1)
 	}
-	os.Exit(exitCode)
 }
 
-func run(args []string) (any, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+// run creates the Session for this invocation, executes exactly one
+// subcommand, and removes the Session's temporary directory before the
+// response is emitted.
+func run(name, raw string) protocol.Response {
 	current, err := session.New()
 	if err != nil {
-		return nil, err
+		return protocol.Failure(err)
 	}
-	if err := current.Check(ctx); err != nil {
-		return nil, err
-	}
-	return current.Run(ctx, args)
+	defer current.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	return current.Run(ctx, name, raw)
 }

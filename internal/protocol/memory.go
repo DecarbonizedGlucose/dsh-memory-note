@@ -1,131 +1,137 @@
 package protocol
 
-import "time"
-
-type MemoryState string
+const MaxSafeInteger int64 = 9007199254740991
 
 const (
-	MemoryActive     MemoryState = "active"
-	MemorySuperseded MemoryState = "superseded"
-	MemoryInvalid    MemoryState = "invalid"
+	MemoryActive     = "active"
+	MemorySuperseded = "superseded"
+	MemoryInvalid    = "invalid"
 )
 
 type Memory struct {
 	ID           string         `json:"memory_id"`
 	WorkspaceID  int64          `json:"workspace_id"`
 	Content      string         `json:"content"`
-	Type         string         `json:"type,omitempty"`
-	Scope        string         `json:"scope,omitempty"`
-	Source       []string       `json:"source,omitempty"`
-	Metadata     map[string]any `json:"metadata,omitempty"`
-	State        MemoryState    `json:"state"`
-	Version      int            `json:"version"`
-	Supersedes   string         `json:"supersedes,omitempty"`
-	SupersededBy string         `json:"superseded_by,omitempty"`
-	CreatedAt    time.Time      `json:"created_at"`
-	UpdatedAt    time.Time      `json:"updated_at"`
+	Type         *string        `json:"type"`
+	Scope        *string        `json:"scope"`
+	Source       []string       `json:"source"`
+	Metadata     map[string]any `json:"metadata"`
+	State        string         `json:"state"`
+	Version      int64          `json:"version"`
+	Supersedes   *string        `json:"supersedes"`
+	SupersededBy *string        `json:"superseded_by"`
+	CreatedAt    Timestamp      `json:"created_at"`
+	UpdatedAt    Timestamp      `json:"updated_at"`
 }
 
-type MemoryCreate struct {
+type MemoryInput struct {
 	Content  string         `json:"content"`
-	Type     string         `json:"type,omitempty"`
-	Scope    string         `json:"scope,omitempty"`
+	Type     *string        `json:"type,omitempty"`
+	Scope    *string        `json:"scope,omitempty"`
 	Source   []string       `json:"source,omitempty"`
 	Metadata map[string]any `json:"metadata,omitempty"`
 }
 
-type MemoryFilter struct {
+type SearchFilter struct {
 	Types         []string   `json:"types,omitempty"`
 	Scopes        []string   `json:"scopes,omitempty"`
-	CreatedAfter  *time.Time `json:"created_after,omitempty"`
-	CreatedBefore *time.Time `json:"created_before,omitempty"`
-	UpdatedAfter  *time.Time `json:"updated_after,omitempty"`
-	UpdatedBefore *time.Time `json:"updated_before,omitempty"`
+	CreatedAfter  *Timestamp `json:"created_after,omitempty"`
+	CreatedBefore *Timestamp `json:"created_before,omitempty"`
+	UpdatedAfter  *Timestamp `json:"updated_after,omitempty"`
+	UpdatedBefore *Timestamp `json:"updated_before,omitempty"`
+}
+
+type SearchHit struct {
+	ID        string    `json:"memory_id"`
+	Type      *string   `json:"type"`
+	Scope     *string   `json:"scope"`
+	Version   int64     `json:"version"`
+	Snippet   string    `json:"snippet"`
+	Score     float64   `json:"score"`
+	UpdatedAt Timestamp `json:"updated_at"`
+}
+
+// ListItem is the compact row returned by memory-list. It never carries
+// content, source, or metadata; use memory-get for the full record.
+type ListItem struct {
+	ID           string    `json:"memory_id"`
+	Type         *string   `json:"type"`
+	Scope        *string   `json:"scope"`
+	State        string    `json:"state"`
+	Version      int64     `json:"version"`
+	Supersedes   *string   `json:"supersedes"`
+	SupersededBy *string   `json:"superseded_by"`
+	CreatedAt    Timestamp `json:"created_at"`
+	UpdatedAt    Timestamp `json:"updated_at"`
+}
+
+type MemoryTarget struct {
+	WorkspaceID     int64  `json:"workspace_id"`
+	MemoryID        string `json:"memory_id"`
+	ExpectedVersion int64  `json:"expected_version"`
+}
+
+type MemoryResult struct {
+	Memory Memory `json:"memory"`
 }
 
 type MemorySearchRequest struct {
-	WorkspaceID int64        `json:"workspace_id"`
-	Query       string       `json:"query,omitempty"`
-	Filter      MemoryFilter `json:"filter,omitempty"`
-	Limit       int          `json:"limit,omitempty"`
+	WorkspaceID int64         `json:"workspace_id"`
+	Query       string        `json:"query,omitempty"`
+	Filter      *SearchFilter `json:"filter,omitempty"`
+	Limit       *int          `json:"limit,omitempty"`
+}
+type MemorySearchData struct {
+	Memories []SearchHit `json:"memories"`
 }
 
-type MemorySearchHit struct {
-	ID        string      `json:"memory_id"`
-	Type      string      `json:"type,omitempty"`
-	Scope     string      `json:"scope,omitempty"`
-	State     MemoryState `json:"state"`
-	Version   int         `json:"version"`
-	Snippet   string      `json:"snippet"`
-	Score     float64     `json:"score"`
-	UpdatedAt time.Time   `json:"updated_at"`
+type MemoryListRequest struct {
+	WorkspaceID int64   `json:"workspace_id"`
+	Limit       *int    `json:"limit,omitempty"`
+	Cursor      *string `json:"cursor,omitempty"`
 }
-
-type MemorySearchResponse struct {
-	Memories []MemorySearchHit `json:"memories"`
+type MemoryListData struct {
+	Memories   []ListItem `json:"memories"`
+	NextCursor *string    `json:"next_cursor,omitempty"`
 }
 
 type MemoryGetRequest struct {
 	WorkspaceID int64  `json:"workspace_id"`
 	MemoryID    string `json:"memory_id"`
 }
-
-type MemoryGetResponse struct {
-	Memory Memory `json:"memory"`
-}
+type MemoryGetData struct{ MemoryResult }
 
 type MemoryCreateRequest struct {
 	WorkspaceID int64 `json:"workspace_id"`
-	MemoryCreate
+	MemoryInput
 }
-
-type MemoryCreateResponse struct {
-	Memory Memory `json:"memory"`
-}
+type MemoryCreateData struct{ MemoryResult }
 
 type MemoryUpdateRequest struct {
 	WorkspaceID     int64           `json:"workspace_id"`
 	MemoryID        string          `json:"memory_id"`
-	ExpectedVersion int             `json:"expected_version"`
+	ExpectedVersion int64           `json:"expected_version"`
 	Content         *string         `json:"content,omitempty"`
 	Type            *string         `json:"type,omitempty"`
 	Scope           *string         `json:"scope,omitempty"`
 	Source          *[]string       `json:"source,omitempty"`
 	Metadata        *map[string]any `json:"metadata,omitempty"`
 }
-
-type MemoryUpdateResponse struct {
-	Memory Memory `json:"memory"`
-}
+type MemoryUpdateData struct{ MemoryResult }
 
 type MemorySupersedeRequest struct {
-	WorkspaceID     int64        `json:"workspace_id"`
-	MemoryID        string       `json:"memory_id"`
-	ExpectedVersion int          `json:"expected_version"`
-	New             MemoryCreate `json:"new"`
+	MemoryTarget
+	New MemoryInput `json:"new"`
 }
-
-type MemorySupersedeResponse struct {
+type MemorySupersedeData struct {
 	Old Memory `json:"old"`
 	New Memory `json:"new"`
 }
 
-type MemoryInvalidateRequest struct {
-	WorkspaceID     int64  `json:"workspace_id"`
-	MemoryID        string `json:"memory_id"`
-	ExpectedVersion int    `json:"expected_version"`
-}
+type MemoryInvalidateRequest struct{ MemoryTarget }
+type MemoryInvalidateData struct{ MemoryResult }
 
-type MemoryInvalidateResponse struct {
-	Memory Memory `json:"memory"`
-}
-
-type MemoryDeleteRequest struct {
-	WorkspaceID     int64  `json:"workspace_id"`
-	MemoryID        string `json:"memory_id"`
-	ExpectedVersion int    `json:"expected_version"`
-}
-
-type MemoryDeleteResponse struct {
+type MemoryDeleteRequest struct{ MemoryTarget }
+type MemoryDeleteData struct {
 	Deleted bool `json:"deleted"`
 }
