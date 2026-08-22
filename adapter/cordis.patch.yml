@@ -1,0 +1,4 @@
+# Applied when a profile lists the dsh-memory-note bundle.
+- insert:
+    - id: memory-note
+      name: dsh-memory-note

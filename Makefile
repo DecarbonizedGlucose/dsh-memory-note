@@ -1,4 +1,4 @@
-.PHONY: build test check
+.PHONY: build test check adapter-check adapter-test check-all
 
 build:
 	mkdir -p bin
@@ -11,3 +11,11 @@ check:
 	gofmt -w cmd internal test
 	go vet ./...
 	go test ./...
+
+adapter-check:
+	cd adapter && pnpm typecheck
+
+adapter-test:
+	cd adapter && pnpm test
+
+check-all: check adapter-check adapter-test
