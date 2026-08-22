@@ -63,7 +63,7 @@ CREATE INDEX workspace_locks_expiry ON workspace_locks(expires_at);
 
 时间单位一律为 Unix 秒。租约 TTL 为 30 秒：`expires_at = acquired_at + 30`。
 
-获取锁（在一个短 `meta.db` 事务内原子完成）：
+获取锁（在一个短 `meta.db` 事务内原子完成；该事务使用 `BEGIN IMMEDIATE`，并发写者在 SQLite busy_timeout 内排队而非撞快照冲突，超时按 `workspace_busy` 报告）：
 
 1. 回收过期锁：`DELETE FROM workspace_locks WHERE expires_at <= ?`（崩溃兜底）；
 2. 冲突检查：
@@ -82,9 +82,9 @@ CREATE INDEX workspace_locks_expiry ON workspace_locks(expires_at);
 ### 2.3 workspace 语句
 
 - resolve：`SELECT workspace_id, path, created_at, created_offset, updated_at, updated_offset FROM workspaces WHERE path = ?`；无行返回 `workspace: null`。
-- register：应用层先校验 canonical path；随后在一个 meta 写事务内按 path 查询，已存在则提交并返回现有行（`created: false`）；不存在则 INSERT 并提交，然后按 §3.1 创建 memory DB 文件。并发注册同一 path 由 `path` UNIQUE 约束仲裁（INSERT 唯一冲突的一方改为返回现有行）；WID 由 AUTOINCREMENT 分配，两个进程不会拿到同一 WID，DB 文件名冲突不可能发生。
-- rebind：meta 写事务内读目标行（无行 → `workspace_not_found`）→ 新 path 与当前 path 相同则提交并返回原行（no-op，不动 `updated_at`）→ 按新 path 查询（存在 → `workspace_path_used`）→ `UPDATE workspaces SET path = ?, updated_at = ?, updated_offset = ? WHERE workspace_id = ?` → 提交。
-- delete：meta 写事务内 `DELETE FROM workspaces WHERE workspace_id = ?`（影响行数为 0 → `workspace_not_found`，回滚）→ 提交 → 按 §3.5 删除文件。
+- register：应用层先校验 canonical path；随后在 `BEGIN IMMEDIATE` 写事务内按 path 查询，已存在则提交并返回现有行（`created: false`）；不存在则 INSERT 并提交，然后按 §3.1 创建 memory DB 文件。并发注册同一 path 由 `path` UNIQUE 约束仲裁（INSERT 唯一冲突的一方改为返回现有行）；WID 由 AUTOINCREMENT 分配，两个进程不会拿到同一 WID，DB 文件名冲突不可能发生。
+- rebind：`BEGIN IMMEDIATE` 写事务内读目标行（无行 → `workspace_not_found`）→ 新 path 与当前 path 相同则提交并返回原行（no-op，不动 `updated_at`）→ 按新 path 查询（存在 → `workspace_path_used`）→ `UPDATE workspaces SET path = ?, updated_at = ?, updated_offset = ? WHERE workspace_id = ?` → 提交。
+- delete：`BEGIN IMMEDIATE` 写事务内 `DELETE FROM workspaces WHERE workspace_id = ?`（影响行数为 0 → `workspace_not_found`，回滚）→ 提交 → 按 §3.5 删除文件。
 
 ## 3. Memory DB
 

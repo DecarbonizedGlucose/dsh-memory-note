@@ -177,6 +177,34 @@ func checkHeader(ctx context.Context, db *stdsql.DB) error {
 
 func (s *Store) Close() error { return s.db.Close() }
 
+// writeTx opens a BEGIN IMMEDIATE transaction on the single meta connection:
+// concurrent meta writers queue on SQLite's busy_timeout instead of racing
+// into snapshot conflicts. On timeout the busy error maps to workspace_busy.
+func (s *Store) writeTx(ctx context.Context) (*stdsql.Conn, error) {
+	conn, err := s.db.Conn(ctx)
+	if err != nil {
+		return nil, internalError("cannot open meta connection")
+	}
+	if _, err := conn.ExecContext(ctx, statements.BeginImmediate); err != nil {
+		_ = conn.Close()
+		return nil, sqliteError(err, protocol.CodeInternal, "cannot begin meta write")
+	}
+	return conn, nil
+}
+
+func commitWrite(ctx context.Context, conn *stdsql.Conn) error {
+	if _, err := conn.ExecContext(ctx, statements.Commit); err != nil {
+		_ = rollbackWrite(conn)
+		return internalError("cannot commit meta write")
+	}
+	return conn.Close()
+}
+
+func rollbackWrite(conn *stdsql.Conn) error {
+	_, _ = conn.ExecContext(context.Background(), statements.Rollback)
+	return conn.Close()
+}
+
 // Lock acquires a per-WID read or write lock for the given session, waiting
 // up to lockWaitTime. It returns workspace_busy on timeout.
 func (s *Store) Lock(ctx context.Context, workspaceID int64, mode, sessionID string) error {
@@ -201,39 +229,45 @@ func (s *Store) Lock(ctx context.Context, workspaceID int64, mode, sessionID str
 }
 
 func (s *Store) tryLock(ctx context.Context, workspaceID int64, mode, sessionID string) error {
-	tx, err := s.db.BeginTx(ctx, nil)
+	conn, err := s.writeTx(ctx)
 	if err != nil {
-		return internalError("cannot begin lock transaction")
+		return err
 	}
-	defer tx.Rollback()
+	committed := false
+	defer func() {
+		if !committed {
+			_ = rollbackWrite(conn)
+		}
+	}()
 	now := time.Now().Unix()
-	if _, err := tx.ExecContext(ctx, statements.DeleteExpiredLocks, now); err != nil {
+	if _, err := conn.ExecContext(ctx, statements.DeleteExpiredLocks, now); err != nil {
 		return internalError("cannot reclaim expired locks")
 	}
 	if mode == "write" {
-		if err := checkLockConflict(ctx, tx, statements.SelectAnyLock, workspaceID, now); err != nil {
+		if err := checkLockConflict(ctx, conn, statements.SelectAnyLock, workspaceID, now); err != nil {
 			return err
 		}
 	} else {
-		if err := checkLockConflict(ctx, tx, statements.SelectWriteLock, workspaceID, now); err != nil {
+		if err := checkLockConflict(ctx, conn, statements.SelectWriteLock, workspaceID, now); err != nil {
 			return err
 		}
 	}
-	if _, err := tx.ExecContext(ctx, statements.InsertLock, workspaceID, mode, sessionID, now, now+int64(lockTTL.Seconds())); err != nil {
+	if _, err := conn.ExecContext(ctx, statements.InsertLock, workspaceID, mode, sessionID, now, now+int64(lockTTL.Seconds())); err != nil {
 		if strings.Contains(strings.ToLower(err.Error()), "unique") {
 			return errLockConflict
 		}
 		return internalError("cannot acquire workspace lock")
 	}
-	if err := tx.Commit(); err != nil {
-		return internalError("cannot commit workspace lock")
+	if err := commitWrite(ctx, conn); err != nil {
+		return err
 	}
+	committed = true
 	return nil
 }
 
-func checkLockConflict(ctx context.Context, tx *stdsql.Tx, query string, workspaceID, now int64) error {
+func checkLockConflict(ctx context.Context, conn *stdsql.Conn, query string, workspaceID, now int64) error {
 	var found int
-	err := tx.QueryRowContext(ctx, query, workspaceID, now).Scan(&found)
+	err := conn.QueryRowContext(ctx, query, workspaceID, now).Scan(&found)
 	if errors.Is(err, stdsql.ErrNoRows) {
 		return nil
 	}
@@ -332,27 +366,34 @@ func (s *Store) Workspaces(ctx context.Context) ([]protocol.Workspace, error) {
 }
 
 func (s *Store) Register(ctx context.Context, path string) (protocol.Workspace, bool, error) {
-	tx, err := s.db.BeginTx(ctx, nil)
+	conn, err := s.writeTx(ctx)
 	if err != nil {
-		return protocol.Workspace{}, false, internalError("cannot begin workspace registration")
+		return protocol.Workspace{}, false, err
 	}
-	defer tx.Rollback()
-	if existing, err := scanWorkspace(tx.QueryRowContext(ctx, statements.SelectWorkspaceByPath, path)); err == nil {
-		if commitErr := tx.Commit(); commitErr != nil {
-			return protocol.Workspace{}, false, internalError("cannot finish workspace registration")
+	committed := false
+	defer func() {
+		if !committed {
+			_ = rollbackWrite(conn)
 		}
+	}()
+	if existing, err := scanWorkspace(conn.QueryRowContext(ctx, statements.SelectWorkspaceByPath, path)); err == nil {
+		if err := commitWrite(ctx, conn); err != nil {
+			return protocol.Workspace{}, false, err
+		}
+		committed = true
 		return existing, false, nil
 	} else if appError, ok := err.(*protocol.Error); !ok || appError.Code != protocol.CodeWorkspaceNotFound {
 		return protocol.Workspace{}, false, err
 	}
 	now := time.Now()
 	nowOffset := offsetMinutes(now)
-	result, err := tx.ExecContext(ctx, statements.InsertWorkspace, path, now.Unix(), nowOffset, now.Unix(), nowOffset)
+	result, err := conn.ExecContext(ctx, statements.InsertWorkspace, path, now.Unix(), nowOffset, now.Unix(), nowOffset)
 	if err != nil {
 		if strings.Contains(strings.ToLower(err.Error()), "unique") {
 			// A concurrent registrar won the path; release the connection and
 			// report the existing mapping.
-			_ = tx.Rollback()
+			_ = rollbackWrite(conn)
+			committed = true
 			existing, resolveErr := s.Resolve(ctx, path)
 			if resolveErr != nil {
 				return protocol.Workspace{}, false, resolveErr
@@ -368,60 +409,74 @@ func (s *Store) Register(ctx context.Context, path string) (protocol.Workspace, 
 	if err != nil || id < 1 || id > protocol.MaxSafeInteger {
 		return protocol.Workspace{}, false, internalError("cannot allocate workspace ID")
 	}
-	if err := tx.Commit(); err != nil {
-		return protocol.Workspace{}, false, internalError("cannot finish workspace registration")
+	if err := commitWrite(ctx, conn); err != nil {
+		return protocol.Workspace{}, false, err
 	}
+	committed = true
 	return protocol.Workspace{ID: id, Path: path, CreatedAt: timestamp(now), UpdatedAt: timestamp(now)}, true, nil
 }
 
 func (s *Store) Rebind(ctx context.Context, id int64, path string) (protocol.Workspace, error) {
-	tx, err := s.db.BeginTx(ctx, nil)
+	conn, err := s.writeTx(ctx)
 	if err != nil {
-		return protocol.Workspace{}, internalError("cannot begin workspace rebind")
+		return protocol.Workspace{}, err
 	}
-	defer tx.Rollback()
-	workspace, err := scanWorkspace(tx.QueryRowContext(ctx, statements.SelectWorkspace, id))
+	committed := false
+	defer func() {
+		if !committed {
+			_ = rollbackWrite(conn)
+		}
+	}()
+	workspace, err := scanWorkspace(conn.QueryRowContext(ctx, statements.SelectWorkspace, id))
 	if err != nil {
 		return protocol.Workspace{}, err
 	}
 	if workspace.Path == path {
-		if commitErr := tx.Commit(); commitErr != nil {
-			return protocol.Workspace{}, internalError("cannot finish workspace rebind")
+		if err := commitWrite(ctx, conn); err != nil {
+			return protocol.Workspace{}, err
 		}
+		committed = true
 		return workspace, nil
 	}
-	if _, err := scanWorkspace(tx.QueryRowContext(ctx, statements.SelectWorkspaceByPath, path)); err == nil {
+	if _, err := scanWorkspace(conn.QueryRowContext(ctx, statements.SelectWorkspaceByPath, path)); err == nil {
 		return protocol.Workspace{}, protocol.NewError(protocol.CodeWorkspacePathUsed, "workspace path is already registered")
 	} else if appError, ok := err.(*protocol.Error); !ok || appError.Code != protocol.CodeWorkspaceNotFound {
 		return protocol.Workspace{}, err
 	}
 	now := time.Now()
-	if _, err := tx.ExecContext(ctx, statements.UpdateWorkspacePath, path, now.Unix(), offsetMinutes(now), id); err != nil {
+	if _, err := conn.ExecContext(ctx, statements.UpdateWorkspacePath, path, now.Unix(), offsetMinutes(now), id); err != nil {
 		return protocol.Workspace{}, internalError("cannot rebind workspace")
 	}
-	if err := tx.Commit(); err != nil {
-		return protocol.Workspace{}, internalError("cannot finish workspace rebind")
+	if err := commitWrite(ctx, conn); err != nil {
+		return protocol.Workspace{}, err
 	}
+	committed = true
 	workspace.Path, workspace.UpdatedAt = path, timestamp(now)
 	return workspace, nil
 }
 
 func (s *Store) DeleteWorkspace(ctx context.Context, id int64) error {
-	tx, err := s.db.BeginTx(ctx, nil)
+	conn, err := s.writeTx(ctx)
 	if err != nil {
-		return internalError("cannot begin workspace deletion")
+		return err
 	}
-	defer tx.Rollback()
-	result, err := tx.ExecContext(ctx, statements.DeleteWorkspace, id)
+	committed := false
+	defer func() {
+		if !committed {
+			_ = rollbackWrite(conn)
+		}
+	}()
+	result, err := conn.ExecContext(ctx, statements.DeleteWorkspace, id)
 	if err != nil {
 		return internalError("cannot delete workspace")
 	}
 	if count, _ := result.RowsAffected(); count != 1 {
 		return protocol.NewError(protocol.CodeWorkspaceNotFound, "workspace not found")
 	}
-	if err := tx.Commit(); err != nil {
-		return internalError("cannot finish workspace deletion")
+	if err := commitWrite(ctx, conn); err != nil {
+		return err
 	}
+	committed = true
 	return nil
 }
 
