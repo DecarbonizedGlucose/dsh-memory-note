@@ -284,3 +284,12 @@ If the process terminates before emitting a valid response, the adapter reports 
 7. The LLM proposes semantic changes, the user approves writes, and Go enforces mechanical safety.
 8. Invalid or ambiguous state is reported explicitly rather than silently repaired.
 9. The JSON protocol is the external contract, `sql-standard.md` pins the storage semantics, and the design document explains why the components and rules exist.
+
+## 10. Versioning and compatibility
+
+There is exactly one user-facing version: the **application version** (currently `1.0.0`), shared by the Go core and the TypeScript adapter bundle. Its single source is `internal/version`; the `version` subcommand prints it and the adapter mirrors it in `package.json`. Release builds may override it with `-ldflags "-X .../internal/version.Version=X.Y.Z"`.
+
+- **The protocol version tracks the major component.** Releases `1.x.x` implement protocol `v1`; a protocol breaking change (protocol §11) becomes protocol `v2` and bumps the application version to `2.0.0`. The core and the adapter must share the same major version and protocol.
+- **The SQL schema version is an internal migration counter and never follows releases.** It increments only when table structures change; opening a database checks it and fails closed with `schema_mismatch` — data is never silently migrated or rebuilt. A `1.0.x` bugfix release therefore never invalidates existing databases.
+
+Version numbers are labels; compatibility comes from the mechanisms that are actually exercised: the shared Go/TS request fixtures pin the core/adapter contract, the `schema_version` gate pins databases, and every mismatch fails closed instead of being repaired silently.

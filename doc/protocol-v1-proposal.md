@@ -19,7 +19,7 @@ dsh-memory-note <subcommand> '<request-json>'
 
 `version` 和 `help` 是核心程序自身命令，不作为 agent tool，也不走 JSON 协议：
 
-- `version`：向 stdout 输出一行版本字符串（当前为 `1.0`），退出码 `0`；输出不是 JSON；
+- `version`：向 stdout 输出一行应用版本字符串（形如 `1.0.0`，核心与适配层同版本），退出码 `0`；输出不是 JSON；
 - `help`：向 stderr 输出 usage 文本，退出码 `0`；输出不是 JSON；
 - argv 形状错误：向 stderr 输出 usage，退出码 `2`，不输出 JSON response。
 
@@ -530,5 +530,6 @@ LLM 可以直接调用 read command（`workspace-resolve`、`memory-search`、`m
 - Go 和 TS 共用一组 valid/invalid JSON fixtures；
 - unknown field、duplicate key、trailing JSON、空值、控制字符、时间格式、cursor 和版本冲突必须测试；
 - 改变已有字段含义、默认值、返回结构、排序或错误码属于 protocol breaking change；
+- 协议版本跟随应用版本的主版本：`1.x.x` 实现协议 `v1`；协议发生 breaking change 时升为 `v2`，核心与适配层的应用版本同步升到 `2.0.0`。SQL schema 版本是内部迁移计数器，不随协议或应用版本变化（见 `sql-standard.md` 与 README「版本与兼容性」）；
 - README 只介绍用法，不重复维护完整协议；
 - 存储层语义由 `sql-standard.md` 规定，两者冲突时以本文档为准。

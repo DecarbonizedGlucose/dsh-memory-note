@@ -284,3 +284,12 @@ Go 可执行文件机械地强制执行协议、状态、版本、事务和完�
 7. LLM 提出语义变更，用户批准写入，Go 强制执行机械安全。
 8. 无效或模糊的状态被显式报告，而不是被静默修复。
 9. JSON 协议是对外契约，`sql-standard.md` 钉死存储层语义，本设计文档解释各组件和规则存在的原因。
+
+## 10. 版本与兼容性
+
+对外只有一个版本：**应用版本（application version）**（当前 `1.0.0`），由 Go 核心与 TypeScript 适配层 bundle 共用。单一来源是 `internal/version`；`version` 子命令输出它，适配层在 `package.json` 中镜像它。发布构建可用 `-ldflags "-X .../internal/version.Version=X.Y.Z"` 覆盖。
+
+- **协议版本跟随主版本。** `1.x.x` 实现协议 `v1`；协议发生 breaking change（协议 §11）时升为协议 `v2`，应用版本同步升到 `2.0.0`。核心与适配层必须同主版本、同协议。
+- **SQL schema 版本是内部迁移计数器，绝不跟随发布。** 只在表结构变化时递增；打开数据库时强校验，不匹配则返回 `schema_mismatch` fail-closed，绝不静默迁移或重建数据。因此任何 `1.0.x` 的 bugfix 发布都不会让已有数据库失效。
+
+版本号只是标签；兼容性来自真正被验证的机制：Go/TS 共享 request fixtures 锁死核心/适配层契约，`schema_version` 门禁锁死数据库，一切不匹配都以 fail-closed 拒绝而非静默修复。

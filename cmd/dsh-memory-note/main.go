@@ -9,9 +9,8 @@ import (
 
 	"github.com/DecarbonizedGlucose/dsh-memory-note/internal/protocol"
 	"github.com/DecarbonizedGlucose/dsh-memory-note/internal/session"
+	"github.com/DecarbonizedGlucose/dsh-memory-note/internal/version"
 )
-
-const version = "1.0"
 
 const usageText = `usage: dsh-memory-note <subcommand> <json request>
 
@@ -37,7 +36,7 @@ subcommands:
 func main() {
 	if len(os.Args) == 2 {
 		if os.Args[1] == "version" {
-			fmt.Println(version)
+			fmt.Println(version.Version)
 			return
 		}
 		if os.Args[1] == "help" {

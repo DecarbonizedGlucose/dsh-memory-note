@@ -24,7 +24,6 @@
 ```sql
 CREATE TABLE meta_info (
   id INTEGER PRIMARY KEY CHECK (id = 1),
-  application_version TEXT NOT NULL,
   schema_version INTEGER NOT NULL CHECK (schema_version = 1)
 );
 
@@ -100,7 +99,6 @@ CREATE TABLE memory_info (
   id INTEGER PRIMARY KEY CHECK (id = 1),
   workspace_id INTEGER NOT NULL
     CHECK (workspace_id BETWEEN 1 AND 9007199254740991),
-  application_version TEXT NOT NULL,
   schema_version INTEGER NOT NULL CHECK (schema_version = 1)
 );
 

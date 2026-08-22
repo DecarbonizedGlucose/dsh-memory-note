@@ -6,10 +6,9 @@ const (
 
 	CreateMetaInfo = `CREATE TABLE meta_info (
 		id INTEGER PRIMARY KEY CHECK(id = 1),
-		application_version TEXT NOT NULL,
 		schema_version INTEGER NOT NULL CHECK(schema_version = 1)
 	)`
-	InsertMetaInfo = `INSERT INTO meta_info(id, application_version, schema_version) VALUES(1, ?, 1)`
+	InsertMetaInfo = `INSERT INTO meta_info(id, schema_version) VALUES(1, 1)`
 	ReadMetaInfo   = `SELECT schema_version FROM meta_info WHERE id = 1`
 
 	CreateWorkspaces = `CREATE TABLE workspaces (

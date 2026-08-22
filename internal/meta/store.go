@@ -19,8 +19,6 @@ import (
 	"github.com/DecarbonizedGlucose/dsh-memory-note/internal/statements"
 )
 
-const applicationVersion = "1.0"
-
 const (
 	lockTTL      = 30 * time.Second
 	lockWaitTime = 5 * time.Second
@@ -143,7 +141,7 @@ func create(ctx context.Context, path string) (*Store, error) {
 			return nil, internalError("cannot initialize meta database")
 		}
 	}
-	if _, err := db.ExecContext(ctx, statements.InsertMetaInfo, applicationVersion); err != nil {
+	if _, err := db.ExecContext(ctx, statements.InsertMetaInfo); err != nil {
 		db.Close()
 		return nil, internalError("cannot write meta database header")
 	}

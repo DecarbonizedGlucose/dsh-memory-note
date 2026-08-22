@@ -18,8 +18,6 @@ import (
 	"github.com/DecarbonizedGlucose/dsh-memory-note/internal/statements"
 )
 
-const applicationVersion = "1.0"
-
 type Store struct {
 	db  *stdsql.DB
 	wid int64
@@ -61,7 +59,7 @@ func CreateFile(ctx context.Context, path string, workspaceID int64) error {
 			return internalError("cannot initialize memory database")
 		}
 	}
-	if _, err := db.ExecContext(ctx, statements.InsertMemoryInfo, workspaceID, applicationVersion); err != nil {
+	if _, err := db.ExecContext(ctx, statements.InsertMemoryInfo, workspaceID); err != nil {
 		db.Close()
 		return internalError("cannot write memory database header")
 	}
