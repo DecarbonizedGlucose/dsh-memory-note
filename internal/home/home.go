@@ -15,7 +15,8 @@ import (
 const Env = "DSH_MEMORY_NOTE_HOME"
 
 // Root resolves the configured HOME: the DSH_MEMORY_NOTE_HOME environment
-// variable when set, otherwise ~/.local/dsh-memory-note. It must be absolute.
+// variable when set, otherwise ~/.local/share/dsh-memory-note. It must be
+// absolute.
 func Root() (string, error) {
 	if value := strings.TrimSpace(os.Getenv(Env)); value != "" {
 		if !filepath.IsAbs(value) {
@@ -27,7 +28,7 @@ func Root() (string, error) {
 	if err != nil {
 		return "", protocol.NewError(protocol.CodeInternal, "cannot resolve user data directory")
 	}
-	return filepath.Join(userHome, ".local", "dsh-memory-note"), nil
+	return filepath.Join(userHome, ".local", "share", "dsh-memory-note"), nil
 }
 
 func MetaDB(homePath string) string    { return filepath.Join(homePath, "meta.db") }

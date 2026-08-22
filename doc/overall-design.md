@@ -79,7 +79,7 @@ DSH_MEMORY_NOTE_HOME/
     └── ...
 ```
 
-The default `DSH_MEMORY_NOTE_HOME` is `~/.local/dsh-memory-note/`. It may be overridden by the `DSH_MEMORY_NOTE_HOME` environment variable. The configured value must resolve to an absolute path.
+The default `DSH_MEMORY_NOTE_HOME` is `~/.local/share/dsh-memory-note/`. It may be overridden by the `DSH_MEMORY_NOTE_HOME` environment variable. The configured value must resolve to an absolute path.
 
 The workspace itself stores no plugin database, WID marker, lock file, or other plugin-owned state. Moving or deleting a workspace directory therefore does not implicitly move or delete its memory database.
 

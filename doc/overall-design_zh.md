@@ -79,7 +79,7 @@ DSH_MEMORY_NOTE_HOME/
     └── ...
 ```
 
-默认的 `DSH_MEMORY_NOTE_HOME` 是 `~/.local/dsh-memory-note/`。它可被 `DSH_MEMORY_NOTE_HOME` 环境变量覆盖。配置的值必须解析为绝对路径。
+默认的 `DSH_MEMORY_NOTE_HOME` 是 `~/.local/share/dsh-memory-note/`。它可被 `DSH_MEMORY_NOTE_HOME` 环境变量覆盖。配置的值必须解析为绝对路径。
 
 工作区本身不存储任何插件数据库、WID 标记、锁文件或其他插件拥有的状态。因此，移动或删除工作区目录并不会隐式地移动或删除其记忆数据库。
 
