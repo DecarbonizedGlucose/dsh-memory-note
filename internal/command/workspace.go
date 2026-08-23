@@ -51,15 +51,6 @@ func workspaceRegister(ctx context.Context, storeRoot, sessionID, raw string) (p
 	if err != nil {
 		return protocol.WorkspaceRegisterData{}, err
 	}
-	if created {
-		finalPath := home.MemoryDB(storeRoot, workspace.ID)
-		if err := memory.CreateFile(ctx, finalPath, workspace.ID); err != nil {
-			return protocol.WorkspaceRegisterData{}, err
-		}
-		if err := syncDirectory(filepath.Dir(finalPath)); err != nil {
-			return protocol.WorkspaceRegisterData{}, err
-		}
-	}
 	if err := run.Commit(ctx); err != nil {
 		return protocol.WorkspaceRegisterData{}, err
 	}
