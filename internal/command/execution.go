@@ -6,10 +6,10 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/DecarbonizedGlucose/dsh-memory-note/internal/home"
 	"github.com/DecarbonizedGlucose/dsh-memory-note/internal/memory"
 	"github.com/DecarbonizedGlucose/dsh-memory-note/internal/meta"
 	"github.com/DecarbonizedGlucose/dsh-memory-note/internal/protocol"
+	"github.com/DecarbonizedGlucose/dsh-memory-note/internal/storage"
 )
 
 const (
@@ -97,7 +97,7 @@ func (e *execution) memoryStore(ctx context.Context, workspaceID int64) (*memory
 	if _, err := e.metaStore.Workspace(ctx, workspaceID); err != nil {
 		return nil, err
 	}
-	return memory.Open(ctx, home.MemoryDB(e.storeRoot, workspaceID), workspaceID)
+	return memory.Open(ctx, storage.MemoryDB(e.storeRoot, workspaceID), workspaceID)
 }
 
 // checkMemoryDir enforces the memory/ directory layout: every entry must be a
@@ -105,7 +105,7 @@ func (e *execution) memoryStore(ctx context.Context, workspaceID int64) (*memory
 // workspace-{WID}-memory.db pattern. Files of unregistered WIDs are tolerated
 // as removable residue and are never opened.
 func (e *execution) checkMemoryDir(ctx context.Context) error {
-	entries, err := os.ReadDir(home.MemoryDir(e.storeRoot))
+	entries, err := os.ReadDir(storage.MemoryDir(e.storeRoot))
 	if err != nil {
 		return protocol.NewError(protocol.CodeHomeBroken, "memory directory cannot be read")
 	}
@@ -133,16 +133,4 @@ func validMemoryFileName(name string) bool {
 		}
 	}
 	return false
-}
-
-func syncDirectory(path string) error {
-	directory, err := os.Open(path)
-	if err != nil {
-		return protocol.NewError(protocol.CodeInternal, "cannot open directory for sync")
-	}
-	defer directory.Close()
-	if err := directory.Sync(); err != nil {
-		return protocol.NewError(protocol.CodeInternal, "cannot sync directory")
-	}
-	return nil
 }

@@ -10,9 +10,9 @@ import (
 	"os"
 
 	"github.com/DecarbonizedGlucose/dsh-memory-note/internal/command"
-	"github.com/DecarbonizedGlucose/dsh-memory-note/internal/home"
 	"github.com/DecarbonizedGlucose/dsh-memory-note/internal/meta"
 	"github.com/DecarbonizedGlucose/dsh-memory-note/internal/protocol"
+	"github.com/DecarbonizedGlucose/dsh-memory-note/internal/storage"
 )
 
 // Session is the highest-level runtime component manager for one one-shot
@@ -29,7 +29,7 @@ type Session struct {
 // New resolves and validates DSH_MEMORY_NOTE_HOME and creates a Session at
 // it. The Session is not a persisted Harness conversation.
 func New() (*Session, error) {
-	root, err := home.Root()
+	root, err := storage.Home()
 	if err != nil {
 		return nil, err
 	}

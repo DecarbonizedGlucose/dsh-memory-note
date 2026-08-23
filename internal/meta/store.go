@@ -14,9 +14,10 @@ import (
 
 	_ "modernc.org/sqlite"
 
-	"github.com/DecarbonizedGlucose/dsh-memory-note/internal/home"
+	"github.com/DecarbonizedGlucose/dsh-memory-note/internal/memory"
 	"github.com/DecarbonizedGlucose/dsh-memory-note/internal/protocol"
 	"github.com/DecarbonizedGlucose/dsh-memory-note/internal/statements"
+	"github.com/DecarbonizedGlucose/dsh-memory-note/internal/storage"
 )
 
 const (
@@ -50,20 +51,20 @@ func InitRoot(ctx context.Context, storeRoot string) (bool, error) {
 	if err := os.Chmod(temp, 0o700); err != nil {
 		return false, internalError("cannot protect temporary store")
 	}
-	if err := os.Mkdir(home.MemoryDir(temp), 0o700); err != nil {
+	if err := os.Mkdir(storage.MemoryDir(temp), 0o700); err != nil {
 		return false, internalError("cannot create memory directory")
 	}
-	store, err := create(ctx, home.MetaDB(temp))
+	store, err := create(ctx, storage.MetaDB(temp))
 	if err != nil {
 		return false, err
 	}
 	if err := store.Close(); err != nil {
 		return false, internalError("cannot close meta database")
 	}
-	if err := syncPath(home.MetaDB(temp)); err != nil {
+	if err := storage.SyncFile(storage.MetaDB(temp)); err != nil {
 		return false, err
 	}
-	if err := syncPath(temp); err != nil {
+	if err := storage.SyncDir(temp); err != nil {
 		return false, err
 	}
 	if err := os.Rename(temp, storeRoot); err != nil {
@@ -72,7 +73,7 @@ func InitRoot(ctx context.Context, storeRoot string) (bool, error) {
 		}
 		return false, internalError("cannot publish store")
 	}
-	if err := syncPath(parent); err != nil {
+	if err := storage.SyncDir(parent); err != nil {
 		return false, err
 	}
 	return true, nil
@@ -86,8 +87,8 @@ func CheckRoot(storeRoot string) error {
 	if err != nil || !root.IsDir() || root.Mode()&os.ModeSymlink != 0 {
 		return protocol.NewError(protocol.CodeHomeBroken, "HOME is not a trusted directory")
 	}
-	metaInfo, metaErr := os.Lstat(home.MetaDB(storeRoot))
-	memoryInfo, memoryErr := os.Lstat(home.MemoryDir(storeRoot))
+	metaInfo, metaErr := os.Lstat(storage.MetaDB(storeRoot))
+	memoryInfo, memoryErr := os.Lstat(storage.MemoryDir(storeRoot))
 	if metaErr != nil || memoryErr != nil || !metaInfo.Mode().IsRegular() || metaInfo.Mode()&os.ModeSymlink != 0 ||
 		!memoryInfo.IsDir() || memoryInfo.Mode()&os.ModeSymlink != 0 {
 		return protocol.NewError(protocol.CodeHomeBroken, "HOME structure is incomplete")
@@ -102,7 +103,7 @@ func Open(ctx context.Context, storeRoot string) (*Store, error) {
 		}
 		return nil, err
 	}
-	db, err := openDB(home.MetaDB(storeRoot), "rw")
+	db, err := openDB(storage.MetaDB(storeRoot), "rw")
 	if err != nil {
 		return nil, protocol.NewError(protocol.CodeHomeBroken, "meta database cannot be opened")
 	}
@@ -365,7 +366,7 @@ func (s *Store) Workspaces(ctx context.Context) ([]protocol.Workspace, error) {
 	return result, nil
 }
 
-func (s *Store) Register(ctx context.Context, path string) (protocol.Workspace, bool, error) {
+func (s *Store) Register(ctx context.Context, path, storeRoot string) (protocol.Workspace, bool, error) {
 	conn, err := s.writeTx(ctx)
 	if err != nil {
 		return protocol.Workspace{}, false, err
@@ -408,6 +409,18 @@ func (s *Store) Register(ctx context.Context, path string) (protocol.Workspace, 
 	id, err := result.LastInsertId()
 	if err != nil || id < 1 || id > protocol.MaxSafeInteger {
 		return protocol.Workspace{}, false, internalError("cannot allocate workspace ID")
+	}
+	// Create the workspace's memory database before committing the mapping so
+	// that an interruption cannot leave a registered workspace with no memory
+	// database. A failure here rolls back the INSERT (the deferred rollback
+	// above); the WID is AUTOINCREMENT and never reused, so a stray file from
+	// a crash before commit is harmless residue, not a live broken workspace.
+	finalPath := storage.MemoryDB(storeRoot, id)
+	if err := memory.CreateFile(ctx, finalPath, id); err != nil {
+		return protocol.Workspace{}, false, err
+	}
+	if err := storage.SyncDir(storage.MemoryDir(storeRoot)); err != nil {
+		return protocol.Workspace{}, false, err
 	}
 	if err := commitWrite(ctx, conn); err != nil {
 		return protocol.Workspace{}, false, err
@@ -501,25 +514,6 @@ func scanWorkspace(row scanner) (protocol.Workspace, error) {
 	return workspace, nil
 }
 
-func CanonicalPath(path string) (string, error) {
-	if !filepath.IsAbs(path) {
-		return "", protocol.Invalid("workspace path must be absolute")
-	}
-	cleaned := filepath.Clean(path)
-	info, err := os.Stat(cleaned)
-	if err != nil {
-		return "", protocol.Invalid("workspace path does not exist")
-	}
-	if !info.IsDir() {
-		return "", protocol.Invalid("workspace path must be a directory")
-	}
-	resolved, err := filepath.EvalSymlinks(cleaned)
-	if err != nil {
-		return "", protocol.Invalid("workspace path cannot be resolved")
-	}
-	return filepath.Clean(resolved), nil
-}
-
 func sqliteError(err error, fallbackCode, message string) error {
 	text := strings.ToLower(err.Error())
 	if strings.Contains(text, "busy") || strings.Contains(text, "locked") {
@@ -529,18 +523,6 @@ func sqliteError(err error, fallbackCode, message string) error {
 }
 
 func internalError(message string) error { return protocol.NewError(protocol.CodeInternal, message) }
-
-func syncPath(path string) error {
-	file, err := os.Open(path)
-	if err != nil {
-		return internalError("cannot open path for sync")
-	}
-	defer file.Close()
-	if err := file.Sync(); err != nil {
-		return internalError("cannot sync store")
-	}
-	return nil
-}
 
 func timestamp(value time.Time) protocol.Timestamp { return protocol.Timestamp{Time: value} }
 

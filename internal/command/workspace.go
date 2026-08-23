@@ -4,12 +4,9 @@ import (
 	"context"
 	"errors"
 	"os"
-	"path/filepath"
 
-	"github.com/DecarbonizedGlucose/dsh-memory-note/internal/home"
-	"github.com/DecarbonizedGlucose/dsh-memory-note/internal/memory"
-	"github.com/DecarbonizedGlucose/dsh-memory-note/internal/meta"
 	"github.com/DecarbonizedGlucose/dsh-memory-note/internal/protocol"
+	"github.com/DecarbonizedGlucose/dsh-memory-note/internal/storage"
 )
 
 func workspaceResolve(ctx context.Context, storeRoot, sessionID, raw string) (protocol.WorkspaceResolveData, error) {
@@ -17,7 +14,7 @@ func workspaceResolve(ctx context.Context, storeRoot, sessionID, raw string) (pr
 	if err := protocol.Decode(raw, &request); err != nil {
 		return protocol.WorkspaceResolveData{}, err
 	}
-	path, err := meta.CanonicalPath(request.Path)
+	path, err := storage.CanonicalPath(request.Path)
 	if err != nil {
 		return protocol.WorkspaceResolveData{}, err
 	}
@@ -41,7 +38,7 @@ func workspaceRegister(ctx context.Context, storeRoot, sessionID, raw string) (p
 	if err := protocol.Decode(raw, &request); err != nil {
 		return protocol.WorkspaceRegisterData{}, err
 	}
-	path, err := meta.CanonicalPath(request.Path)
+	path, err := storage.CanonicalPath(request.Path)
 	if err != nil {
 		return protocol.WorkspaceRegisterData{}, err
 	}
@@ -50,7 +47,7 @@ func workspaceRegister(ctx context.Context, storeRoot, sessionID, raw string) (p
 		return protocol.WorkspaceRegisterData{}, err
 	}
 	defer run.Release()
-	workspace, created, err := run.metaStore.Register(ctx, path)
+	workspace, created, err := run.metaStore.Register(ctx, path, storeRoot)
 	if err != nil {
 		return protocol.WorkspaceRegisterData{}, err
 	}
@@ -77,7 +74,7 @@ func workspaceRebind(ctx context.Context, storeRoot, sessionID, raw string) (pro
 	if err := validWorkspaceID(request.WorkspaceID); err != nil {
 		return protocol.WorkspaceRebindData{}, err
 	}
-	path, err := meta.CanonicalPath(request.Path)
+	path, err := storage.CanonicalPath(request.Path)
 	if err != nil {
 		return protocol.WorkspaceRebindData{}, err
 	}
@@ -167,7 +164,7 @@ func workspaceDelete(ctx context.Context, storeRoot, sessionID, raw string) (pro
 }
 
 func removeMemoryFiles(storeRoot string, workspaceID int64) error {
-	path := home.MemoryDB(storeRoot, workspaceID)
+	path := storage.MemoryDB(storeRoot, workspaceID)
 	// Best-effort sidecars first, then the main file, which must go away.
 	for _, target := range []string{path + "-wal", path + "-shm"} {
 		if info, err := os.Lstat(target); err == nil {
@@ -189,5 +186,5 @@ func removeMemoryFiles(storeRoot string, workspaceID int64) error {
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return protocol.NewError(protocol.CodeInternal, "cannot inspect workspace memory database")
 	}
-	return syncDirectory(home.MemoryDir(storeRoot))
+	return storage.SyncDir(storage.MemoryDir(storeRoot))
 }
