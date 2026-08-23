@@ -32,7 +32,7 @@ dsh-memory-note <subcommand> '<json-request>'
 
 Memory data lives in `~/.local/share/dsh-memory-note` (override with
 `DSH_MEMORY_NOTE_HOME`). The full JSON contract is in
-[`doc/protocol-v1-proposal.md`](doc/protocol-v1-proposal.md).
+[`doc/en/protocol-v1-proposal.md`](doc/en/protocol-v1-proposal.md).
 
 ## Install / uninstall
 

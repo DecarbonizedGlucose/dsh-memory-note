@@ -1,6 +1,6 @@
 # Overall Design
 
-This document defines the overall design of `dsh-memory-note`. It fixes the runtime structure, component responsibilities, storage boundaries, concurrency model, and memory lifecycle. The exact JSON request, response, and error contracts are defined separately by `protocol-v1-proposal.md`.
+This document defines the overall design of `dsh-memory-note`. It defines the runtime structure, component responsibilities, storage boundaries, concurrency model, and memory lifecycle. The exact JSON request, response, and error contracts are defined separately by `protocol-v1-proposal.md`.
 
 The project is local and lightweight. Its core responsibilities are safe one-shot execution, workspace identity independent of paths, cross-process coordination, explicit memory state transitions, optimistic version checks, and a strict user-approval boundary.
 
@@ -94,7 +94,7 @@ In the remainder of this document, **HOME** means `DSH_MEMORY_NOTE_HOME`, not th
 - workspace creation and update times and schema metadata;
 - the per-WID cross-process read/write lock records.
 
-`meta.db` does not store memory content. It is the authority for resolving a path to a WID and for coordinating operations that may race with workspace rebinding, clearing, or deletion.
+`meta.db` does not store memory content. It resolves a path to a WID and for coordinating operations that may race with workspace rebinding, clearing, or deletion.
 
 The workspace name is not an identity. Directories with the same name but different absolute paths may have different WIDs. A WID is not a prefixed string or random token. The memory database filename depends only on the decimal WID, for example `workspace-12-memory.db`.
 
@@ -184,7 +184,7 @@ It does not implement storage, locks, transactions, memory state transitions, or
 
 The LLM may directly invoke read operations without user approval. It may detect that a memory contradicts current facts and propose `update`, `supersede`, or `invalidate`, but it cannot approve its own proposal. Approval is a Harness interaction, not a JSON boolean that the LLM can set.
 
-The Go executable mechanically enforces protocol, state, version, transaction, and integrity rules. The LLM decides semantic intent; the user authorizes effects.
+The Go executable enforces protocol, state, version, transaction, and integrity rules. The LLM decides semantic intent; the user authorizes effects.
 
 ## 6. Memory model and subcommands
 
@@ -283,7 +283,7 @@ If the process terminates before emitting a valid response, the adapter reports 
 6. Version checks prevent stale writes without requiring full historical-version storage.
 7. The LLM proposes semantic changes, the user approves writes, and Go enforces mechanical safety.
 8. Invalid or ambiguous state is reported explicitly rather than silently repaired.
-9. The JSON protocol is the external contract, `sql-standard.md` pins the storage semantics, and the design document explains why the components and rules exist.
+9. The JSON protocol is the external contract, `sql-standard.md` defines the storage semantics, and the design document explains why the components and rules exist.
 
 ## 10. Versioning and compatibility
 

@@ -1,6 +1,6 @@
 # SQL 标准
 
-本文档规范 dsh-memory-note 存储层的表结构、SQL 语句、事务边界与不变式。它是 `overall-design.md` 与 `protocol-v1-proposal.md` 在存储层的落实；三者冲突时，以协议文档为准。
+本文档规范 dsh-memory-note 存储层的表结构、SQL 语句、事务边界与不变式。它是 `overall-design_zh.md` 与 `protocol-v1-proposal_zh.md` 在存储层的落实；三者冲突时，以协议文档为准。
 
 适用范围：HOME 下的 `meta.db`，以及 `memory/` 下的每个 `workspace-{WID}-memory.db`（下文简称 memory DB）。
 

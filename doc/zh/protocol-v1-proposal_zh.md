@@ -1,6 +1,6 @@
 # One-shot Command Protocol v1
 
-本文定义 dsh-memory-note 核心程序的公开命令协议。它规定每个 subcommand 传入什么、返回什么，以及失败时如何判断。存储层的表结构、SQL 语句与不变式由 `sql-standard.md` 另行规定；两者冲突时以本文档为准。
+本文定义 dsh-memory-note 核心程序的公开命令协议。它规定每个 subcommand 传入什么、返回什么，以及失败时如何判断。存储层的表结构、SQL 语句与不变式由 `sql-standard_zh.md` 另行规定；两者冲突时以本文档为准。
 
 该协议不是 JSON-RPC 2.0。subcommand 已经表示 method，因此 request 不再增加 `jsonrpc`、`method`、`params`、`request_id` 等公共包装。
 
@@ -530,6 +530,6 @@ LLM 可以直接调用 read command（`workspace-resolve`、`memory-search`、`m
 - Go 和 TS 共用一组 valid/invalid JSON fixtures；
 - unknown field、duplicate key、trailing JSON、空值、控制字符、时间格式、cursor 和版本冲突必须测试；
 - 改变已有字段含义、默认值、返回结构、排序或错误码属于 protocol breaking change；
-- 协议版本跟随应用版本的主版本：`1.x.x` 实现协议 `v1`；协议发生 breaking change 时升为 `v2`，核心与适配层的应用版本同步升到 `2.0.0`。SQL schema 版本是内部迁移计数器，不随协议或应用版本变化（见 `sql-standard.md` 与 README「版本与兼容性」）；
+- 协议版本跟随应用版本的主版本：`1.x.x` 实现协议 `v1`；协议发生 breaking change 时升为 `v2`，核心与适配层的应用版本同步升到 `2.0.0`。SQL schema 版本是内部迁移计数器，不随协议或应用版本变化（见 `sql-standard_zh.md` 与 README「版本与兼容性」）；
 - README 只介绍用法，不重复维护完整协议；
-- 存储层语义由 `sql-standard.md` 规定，两者冲突时以本文档为准。
+- 存储层语义由 `sql-standard_zh.md` 规定，两者冲突时以本文档为准。

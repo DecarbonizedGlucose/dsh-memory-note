@@ -32,7 +32,7 @@ dsh-memory-note <subcommand> '<json-request>'
 
 记忆数据存放在 `~/.local/share/dsh-memory-note`（可用
 `DSH_MEMORY_NOTE_HOME` 覆盖）。完整 JSON 契约见
-[`doc/protocol-v1-proposal.md`](doc/protocol-v1-proposal.md)。
+[`doc/zh/protocol-v1-proposal.md`](doc/zh/protocol-v1-proposal.md)。
 
 ## 安装 / 卸载
 
