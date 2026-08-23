@@ -4,6 +4,7 @@
 package storage
 
 import (
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -57,9 +58,10 @@ func MemoryDB(homePath string, workspaceID int64) string {
 	return filepath.Join(MemoryDir(homePath), name)
 }
 
-// SyncFile flushes a regular file to disk.
+// SyncFile flushes a regular file to disk. It opens the file read-write
+// because Windows cannot flush buffers on a read-only handle.
 func SyncFile(path string) error {
-	file, err := os.Open(path)
+	file, err := os.OpenFile(path, os.O_RDWR, 0)
 	if err != nil {
 		return protocol.NewError(protocol.CodeInternal, "cannot open file for sync")
 	}
@@ -73,3 +75,18 @@ func SyncFile(path string) error {
 // SyncDir flushes a directory's entries; it is a no-op on platforms that
 // cannot sync directories.
 func SyncDir(path string) error { return syncDir(path) }
+
+// SQLiteURI builds the file: URI that modernc.org/sqlite opens for the
+// database at path with the given open mode (e.g. "rw"). The path's platform
+// form is normalized first so the URI parses identically on every OS.
+func SQLiteURI(path, mode string) string {
+	return (&url.URL{
+		Scheme:   "file",
+		Path:     sqlitePath(path),
+		RawQuery: "mode=" + mode,
+	}).String()
+}
+
+// ExecutableName maps a base executable name to its platform spelling, e.g.
+// "dsh-memory-note" becomes "dsh-memory-note.exe" on Windows.
+func ExecutableName(base string) string { return executableName(base) }

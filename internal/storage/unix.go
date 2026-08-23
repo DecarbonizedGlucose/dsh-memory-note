@@ -30,3 +30,7 @@ func syncDir(path string) error {
 }
 
 func normalizeCase(path string) string { return path }
+
+func sqlitePath(path string) string { return path }
+
+func executableName(base string) string { return base }

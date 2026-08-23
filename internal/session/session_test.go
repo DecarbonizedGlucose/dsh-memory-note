@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -84,7 +85,11 @@ func TestRunInitializesHomeAndExecutes(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer current.Close()
-	response := current.Run(context.Background(), "workspace-resolve", `{"path":"`+project+`"}`)
+	raw, err := json.Marshal(map[string]any{"path": project})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := current.Run(context.Background(), "workspace-resolve", string(raw))
 	if !response.OK || response.Data == nil {
 		t.Fatalf("resolve response = %#v", response)
 	}

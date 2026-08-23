@@ -15,6 +15,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/DecarbonizedGlucose/dsh-memory-note/internal/storage"
 )
 
 var coreBinary string
@@ -30,7 +32,7 @@ func TestMain(m *testing.M) {
 		fmt.Fprintln(os.Stderr, "create binary dir:", err)
 		os.Exit(1)
 	}
-	coreBinary = filepath.Join(dir, "dsh-memory-note")
+	coreBinary = filepath.Join(dir, storage.ExecutableName("dsh-memory-note"))
 	build := exec.Command("go", "build", "-o", coreBinary, "./cmd/dsh-memory-note")
 	build.Dir = repoRoot
 	build.Env = os.Environ()
@@ -59,7 +61,7 @@ func buildCore(t *testing.T) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	binary := filepath.Join(t.TempDir(), "dsh-memory-note")
+	binary := filepath.Join(t.TempDir(), storage.ExecutableName("dsh-memory-note"))
 	process := exec.Command("go", "build", "-o", binary, "./cmd/dsh-memory-note")
 	process.Dir = repoRoot
 	if output, err := process.CombinedOutput(); err != nil {

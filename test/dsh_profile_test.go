@@ -40,8 +40,9 @@ func TestDshProfileRegisterAndRemove(t *testing.T) {
 		t.Fatalf("adapter build failed: %v\n%s", err, output)
 	}
 
-	// A dedicated dsh home under /tmp, removed after the test.
-	home, err := os.MkdirTemp("/tmp", "dsh-memory-note-test-dsh-home-")
+	// A dedicated dsh home under the OS temporary directory, removed after
+	// the test.
+	home, err := os.MkdirTemp("", "dsh-memory-note-test-dsh-home-")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -95,6 +96,11 @@ func TestDshProfileRegisterAndRemove(t *testing.T) {
 	}
 	var stderr bytes.Buffer
 	boot.Stderr = &stderr
+	// Killing the direct process does not kill its descendants, which can keep
+	// the stdout/stderr pipes open and make Wait block forever. WaitDelay makes
+	// Wait return once the direct process is reaped even if a descendant still
+	// holds a pipe.
+	boot.WaitDelay = 5 * time.Second
 	if err := boot.Start(); err != nil {
 		t.Fatalf("start profile boot: %v", err)
 	}

@@ -8,7 +8,6 @@ import (
 	stdsql "database/sql"
 	"encoding/json"
 	"errors"
-	"net/url"
 	"os"
 	"time"
 
@@ -16,6 +15,7 @@ import (
 
 	"github.com/DecarbonizedGlucose/dsh-memory-note/internal/protocol"
 	"github.com/DecarbonizedGlucose/dsh-memory-note/internal/statements"
+	"github.com/DecarbonizedGlucose/dsh-memory-note/internal/storage"
 )
 
 type Store struct {
@@ -66,13 +66,8 @@ func CreateFile(ctx context.Context, path string, workspaceID int64) error {
 	if err := db.Close(); err != nil {
 		return internalError("cannot close memory database")
 	}
-	file, err = os.Open(path)
-	if err != nil {
-		return internalError("cannot open memory database for sync")
-	}
-	defer file.Close()
-	if err := file.Sync(); err != nil {
-		return internalError("cannot sync memory database")
+	if err := storage.SyncFile(path); err != nil {
+		return err
 	}
 	complete = true
 	return nil
@@ -102,8 +97,7 @@ func Open(ctx context.Context, path string, workspaceID int64) (*Store, error) {
 }
 
 func openDB(path, mode string) (*stdsql.DB, error) {
-	uri := (&url.URL{Scheme: "file", Path: path, RawQuery: "mode=" + mode}).String()
-	return stdsql.Open("sqlite", uri)
+	return stdsql.Open("sqlite", storage.SQLiteURI(path, mode))
 }
 
 func checkHeader(ctx context.Context, db *stdsql.DB, workspaceID int64) error {

@@ -8,7 +8,6 @@ import (
 	stdsql "database/sql"
 	"encoding/hex"
 	"errors"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -157,8 +156,7 @@ func create(ctx context.Context, path string) (*Store, error) {
 }
 
 func openDB(path, mode string) (*stdsql.DB, error) {
-	uri := (&url.URL{Scheme: "file", Path: path, RawQuery: "mode=" + mode}).String()
-	db, err := stdsql.Open("sqlite", uri)
+	db, err := stdsql.Open("sqlite", storage.SQLiteURI(path, mode))
 	if err != nil {
 		return nil, err
 	}

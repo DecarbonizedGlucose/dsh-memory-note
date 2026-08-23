@@ -4,3 +4,4 @@ node_modules/
 dist/
 .dsh-test/
 doc/localdoc/
+.gocache/
