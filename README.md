@@ -1,5 +1,7 @@
 # dsh-memory-note
 
+**English** | [中文](README_zh.md)
+
 A lightweight, local, cross-session memory core for DeepSeek Harness: a
 one-shot Go executable plus a thin TypeScript adapter bundle.
 

@@ -1,5 +1,7 @@
 # dsh-memory-note
 
+[English](README.md) | **中文**
+
 DeepSeek Harness 的轻量、本地、跨会话记忆核心：一个一次性（one-shot）Go
 可执行文件 + 一层薄 TypeScript 适配器 bundle。
 
