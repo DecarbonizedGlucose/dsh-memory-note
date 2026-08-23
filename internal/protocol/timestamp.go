@@ -36,9 +36,6 @@ func (t *Timestamp) UnmarshalJSON(raw []byte) error {
 	return nil
 }
 
-// validTimestampShape rejects anything time.Parse would accept but the
-// protocol does not: missing offset, fractional seconds, lowercase z, or a
-// colon-less offset.
 func validTimestampShape(text string) bool {
 	if len(text) == 20 && text[19] == 'Z' {
 		return true

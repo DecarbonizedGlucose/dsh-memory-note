@@ -36,8 +36,7 @@ func New() (*Session, error) {
 	return NewAt(root)
 }
 
-// NewAt creates a Session at an explicit home path. It creates the session ID
-// and the private temporary directory; it does not touch HOME itself.
+// NewAt creates a Session at an explicit home path without touching HOME.
 func NewAt(home string) (*Session, error) {
 	id, err := newID()
 	if err != nil {
@@ -54,7 +53,6 @@ func NewAt(home string) (*Session, error) {
 	return &Session{ID: id, Home: home, tempDir: tempDir}, nil
 }
 
-// TempDir returns the private temporary directory owned by the Session.
 func (s *Session) TempDir() string { return s.tempDir }
 
 // Prepare accepts a healthy HOME, initializes a missing HOME atomically, and

@@ -51,8 +51,7 @@ type SearchHit struct {
 	UpdatedAt Timestamp `json:"updated_at"`
 }
 
-// ListItem is the compact row returned by memory-list. It never carries
-// content, source, or metadata; use memory-get for the full record.
+// ListItem is the compact row returned by memory-list.
 type ListItem struct {
 	ID           string    `json:"memory_id"`
 	Type         *string   `json:"type"`

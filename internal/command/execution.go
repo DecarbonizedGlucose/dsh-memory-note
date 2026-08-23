@@ -93,7 +93,6 @@ func (e *execution) verifyWriteLock(ctx context.Context) error {
 	return e.metaStore.RenewWriteLock(ctx, e.workspaceID, e.sessionID)
 }
 
-// memoryStore validates the WID mapping and opens its memory database.
 func (e *execution) memoryStore(ctx context.Context, workspaceID int64) (*memory.Store, error) {
 	if _, err := e.metaStore.Workspace(ctx, workspaceID); err != nil {
 		return nil, err
@@ -122,8 +121,6 @@ func (e *execution) checkMemoryDir(ctx context.Context) error {
 	return nil
 }
 
-// validMemoryFileName reports whether name is workspace-{WID}-memory.db or
-// its -wal / -shm sidecar, with WID a positive decimal integer.
 func validMemoryFileName(name string) bool {
 	for _, suffix := range []string{"-memory.db", "-memory.db-wal", "-memory.db-shm"} {
 		if strings.HasSuffix(name, suffix) {

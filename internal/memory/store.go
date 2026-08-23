@@ -160,9 +160,8 @@ func (tx *Tx) Active(ctx context.Context) ([]protocol.Memory, error) {
 	return result, nil
 }
 
-// List returns up to limit rows in memory-list order. afterUpdated and
-// afterID are the keyset cursor from the previous page; when afterUpdated is
-// nil it returns the first page.
+// List pages memories in memory-list order; afterUpdated/afterID are the
+// keyset cursor from the previous page (nil for the first page).
 func (tx *Tx) List(ctx context.Context, afterUpdated *int64, afterID string, limit int) ([]protocol.Memory, error) {
 	var (
 		rows *stdsql.Rows

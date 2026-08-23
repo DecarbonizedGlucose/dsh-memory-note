@@ -105,8 +105,6 @@ func cleanLabels(values []string) []string {
 	return result
 }
 
-// words splits the query into keywords: maximal runs of Unicode letters or
-// numbers, with ASCII-only case folding. No Unicode normalization is applied.
 func words(value string) []string {
 	parts := strings.FieldsFunc(asciiFold(value), func(char rune) bool {
 		return !unicode.IsLetter(char) && !unicode.IsNumber(char)
@@ -114,7 +112,6 @@ func words(value string) []string {
 	return cleanLabels(parts)
 }
 
-// asciiFold lowercases only ASCII A-Z; every other byte is kept exactly.
 func asciiFold(value string) string {
 	folded := []byte(value)
 	for index, char := range folded {

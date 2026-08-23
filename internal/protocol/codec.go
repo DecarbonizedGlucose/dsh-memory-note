@@ -13,12 +13,10 @@ import (
 const (
 	MaxRequestSize = 96 * 1024
 
-	// maxMetadataDepth limits value nesting inside metadata objects/arrays.
 	maxMetadataDepth = 32
 
-	// maxJSONDepth caps total nesting so a hostile request cannot overflow
-	// the recursive checker itself. It must exceed maxMetadataDepth plus the
-	// wrapper levels of the deepest request shape.
+	// maxJSONDepth caps total nesting so the recursive checker cannot overflow;
+	// it must exceed maxMetadataDepth.
 	maxJSONDepth = 64
 )
 
@@ -146,9 +144,6 @@ func insideMetadata(path string) bool {
 	return false
 }
 
-// metadataDepth counts value levels below the first "metadata" key segment:
-// the metadata value itself is level 0, its direct children are level 1, and
-// so on. It returns 0 for paths outside metadata.
 func metadataDepth(path string) int {
 	parts := strings.Split(path, "/")
 	for index, part := range parts {
@@ -159,9 +154,6 @@ func metadataDepth(path string) int {
 	return 0
 }
 
-// cleanControl reports whether a string contains only protocol-safe control
-// characters: TAB, LF, and CR are allowed; all other C0 controls and DEL are
-// rejected.
 func cleanControl(value string) bool {
 	for _, char := range value {
 		switch char {
