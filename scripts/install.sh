@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
-# Install dsh-memory-note from a source checkout:
+# Install dsh-memory-note from a source checkout on Unix-like systems:
 #   1. build the Go core and install it into GOBIN,
 #   2. build the TypeScript adapter bundle,
 #   3. register the bundle into a dsh profile via a local link: install.
+#
+# For Windows, use scripts/install.ps1. This script assumes a POSIX shell and
+# the standard Unix data directory (~/.local/share/dsh-memory-note).
 #
 # The core is built from the checkout, so no version tag or remote is needed.
 # The adapter is installed as a link: so edits to adapter/ (plus a rebuild)
@@ -33,9 +36,10 @@ echo "==> building core"
 (cd "$ROOT" && go install ./cmd/dsh-memory-note)
 
 # 2. Adapter: install dependencies (peers resolve from the checkout's own
-#    node_modules) and build the dist/ bundle entry.
+#    node_modules) and build the dist/ bundle entry. --frozen-lockfile keeps
+#    the install from silently rewriting the lockfile.
 echo "==> building adapter"
-pnpm --dir "$ROOT/adapter" install
+pnpm --dir "$ROOT/adapter" install --frozen-lockfile
 pnpm --dir "$ROOT/adapter" build
 
 # 3. Register the bundle. dsh forwards the args to pnpm inside the profile
@@ -44,7 +48,11 @@ echo "==> installing into profile '$PROFILE'"
 dsh plugin --profile "$PROFILE" add "link:$ROOT/adapter"
 
 echo
-echo "done. Make sure '$(go env GOPATH)/bin' is on PATH: the adapter defaults to"
+BINDIR="$(go env GOBIN)"
+if [ -z "$BINDIR" ]; then
+  BINDIR="$(go env GOPATH)/bin"
+fi
+echo "done. Make sure '$BINDIR' is on PATH: the adapter defaults to"
 echo "binaryPath=dsh-memory-note, which is resolved through PATH at call time."
 echo "Memory data lives in ~/.local/share/dsh-memory-note unless DSH_MEMORY_NOTE_HOME is set."
 echo "Restart the profile (e.g. 'dsh --profile $PROFILE') to load the tools."
