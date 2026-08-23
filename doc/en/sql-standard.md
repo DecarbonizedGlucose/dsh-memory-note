@@ -11,8 +11,8 @@ Scope: `meta.db` under HOME, and each `workspace-{WID}-memory.db` under `memory/
 - All TEXT comparison and sorting use BINARY collation (the SQLite default); the protocol's "`memory_id` ascending" ordering is comparison by UTF-8 byte order.
 - Database files are created with mode `0600` and directories with mode `0700`.
 - Database identifiers:
-  - `meta.db`: `PRAGMA application_id = 0x44534D4D` ("DSMM"), `PRAGMA user_version = 1`;
-  - memory DB: `PRAGMA application_id = 0x44534D57` ("DSMW"), `PRAGMA user_version = 1`.
+  - `meta.db`: `PRAGMA application_id = 0x44534D4D` ("DSMM"), `PRAGMA user_version = 2`;
+  - memory DB: `PRAGMA application_id = 0x44534D57` ("DSMW"), `PRAGMA user_version = 2`.
 - Time columns: always stored as two INTEGERs — epoch seconds (the UTC instant) and offset minutes (the UTC offset at that instant, range -840..840). Comparison, range filtering, and ordering inside SQL use only epoch seconds; the external output format is defined by protocol §3.
 - JSON columns (`source_json`, `metadata_json`): always stored in compact serialization (no extra whitespace), so that the protocol's length limits match the stored byte count.
 - Transaction model: memory write commands use a single write transaction inside the memory DB; `meta.db` carries only short transactions (mapping validation, lock acquire/release, workspace-table changes). The WID lock is released and meta coordination ends only after the memory DB write transaction commits; if the lock release or teardown fails, the command returns `internal_error`, but the memory changes have already taken effect; callers follow the protocol's unknown-result discipline (read state first, then decide the next step).
@@ -24,7 +24,8 @@ Scope: `meta.db` under HOME, and each `workspace-{WID}-memory.db` under `memory/
 ```sql
 CREATE TABLE meta_info (
   id INTEGER PRIMARY KEY CHECK (id = 1),
-  schema_version INTEGER NOT NULL CHECK (schema_version = 1)
+  schema_version INTEGER NOT NULL CHECK (schema_version = 2),
+  cursor_key TEXT NOT NULL
 );
 
 CREATE TABLE workspaces (
@@ -99,7 +100,7 @@ CREATE TABLE memory_info (
   id INTEGER PRIMARY KEY CHECK (id = 1),
   workspace_id INTEGER NOT NULL
     CHECK (workspace_id BETWEEN 1 AND 9007199254740991),
-  schema_version INTEGER NOT NULL CHECK (schema_version = 1)
+  schema_version INTEGER NOT NULL CHECK (schema_version = 2)
 );
 
 CREATE TABLE memories (
@@ -187,7 +188,7 @@ All write commands complete within a single memory DB write transaction, checkin
 
 - get: `SELECT ... FROM memories WHERE workspace_id = ? AND memory_id = ?`; any state.
 - search: the retrieval statement is `SELECT ... FROM memories WHERE workspace_id = ? AND state = 'active' ORDER BY updated_at DESC, memory_id ASC`; time ranges, `type`/`scope` exact filters, keyword substring matching, and score are all computed by the application layer over these returned rows using the deterministic algorithm from protocol §7.1 (filters are not pushed down into SQL and do not change the result set's semantics; rows with `type IS NULL` do not match any non-empty `types` filter).
-- list: keyset pagination. First page: `SELECT ... FROM memories WHERE workspace_id = ? ORDER BY updated_at DESC, memory_id ASC LIMIT ?`; subsequent pages: `SELECT ... FROM memories WHERE workspace_id = ? AND (updated_at < ? OR (updated_at = ? AND memory_id > ?)) ORDER BY updated_at DESC, memory_id ASC LIMIT ?`. Fetch `limit + 1` rows each time to determine whether another page follows; the cursor encodes the previous page's last-row `(updated_at, memory_id)` and is an opaque string — if it cannot be decoded, return `invalid_request`.
+- list: keyset pagination. First page: `SELECT ... FROM memories WHERE workspace_id = ? ORDER BY updated_at DESC, memory_id ASC LIMIT ?`; subsequent pages: `SELECT ... FROM memories WHERE workspace_id = ? AND (updated_at < ? OR (updated_at = ? AND memory_id > ?)) ORDER BY updated_at DESC, memory_id ASC LIMIT ?`. Fetch `limit + 1` rows each time to determine whether another page follows; the cursor encodes the previous page's last-row `(updated_at, memory_id)` and is an opaque string. The cursor payload is authenticated with HMAC-SHA256 keyed by `meta_info.cursor_key`; a cursor that cannot be decoded or whose HMAC does not verify returns `invalid_request`, so a caller cannot forge a cursor to change the pagination starting point.
 
 ### 3.5 File deletion
 
@@ -197,7 +198,7 @@ After the meta transaction commits, `workspace-delete` removes `workspace-{WID}-
 
 - The `meta.db` and memory DB paths must be regular files and not symlinks, otherwise return `home_broken` / `workspace_broken` respectively.
 - `PRAGMA application_id` and `PRAGMA user_version` must match the §1 identifiers: a wrong application_id → `home_broken` / `workspace_broken`; an unsupported user_version → `schema_mismatch`.
-- The header row must exist: `meta_info`'s `schema_version = 1`; in the memory DB's `memory_info`, `workspace_id` must match the WID being opened and `schema_version = 1`.
+- The header row must exist: `meta_info`'s `schema_version = 2` and its `cursor_key` must be a valid 32-byte hex value; in the memory DB's `memory_info`, `workspace_id` must match the WID being opened and `schema_version = 2`.
 - Every entry in the `memory/` directory must be a regular file, not a symlink, with a name matching the `workspace-{decimal WID}-memory.db`, `-wal`, or `-shm` pattern; any other entry → `workspace_broken`. Files whose names match the pattern but whose WID is unregistered are leftovers from `workspace-delete`; they are not treated as anomalies and are never opened.
 - Running `PRAGMA integrity_check` on every open is not required; when corruption is detected, report it as `workspace_broken` / `home_broken` and never silently rebuild or clear data. `workspace-delete` is the only channel for cleaning up a half-corrupted workspace.
 

@@ -4,7 +4,9 @@ package meta
 
 import (
 	"context"
+	"crypto/rand"
 	stdsql "database/sql"
+	"encoding/hex"
 	"errors"
 	"net/url"
 	"os"
@@ -142,7 +144,12 @@ func create(ctx context.Context, path string) (*Store, error) {
 			return nil, internalError("cannot initialize meta database")
 		}
 	}
-	if _, err := db.ExecContext(ctx, statements.InsertMetaInfo); err != nil {
+	key, err := newCursorKey()
+	if err != nil {
+		db.Close()
+		return nil, err
+	}
+	if _, err := db.ExecContext(ctx, statements.InsertMetaInfo, key); err != nil {
 		db.Close()
 		return nil, internalError("cannot write meta database header")
 	}
@@ -170,10 +177,45 @@ func checkHeader(ctx context.Context, db *stdsql.DB) error {
 	if schemaVersion != statements.SchemaVersion {
 		return protocol.NewError(protocol.CodeSchemaMismatch, "meta schema version is not supported")
 	}
-	if err := db.QueryRowContext(ctx, statements.ReadMetaInfo).Scan(&recordedVersion); err != nil || recordedVersion != statements.SchemaVersion {
+	var hexKey string
+	if err := db.QueryRowContext(ctx, statements.ReadMetaInfo).Scan(&recordedVersion, &hexKey); err != nil || recordedVersion != statements.SchemaVersion {
 		return protocol.NewError(protocol.CodeHomeBroken, "meta database header is invalid")
 	}
+	if _, err := decodeCursorKey(hexKey); err != nil {
+		return protocol.NewError(protocol.CodeHomeBroken, "meta database cursor key is invalid")
+	}
 	return nil
+}
+
+// CursorKey returns the per-HOME HMAC key used to authenticate memory-list
+// pagination cursors.
+func (s *Store) CursorKey(ctx context.Context) ([]byte, error) {
+	var recordedVersion int
+	var hexKey string
+	if err := s.db.QueryRowContext(ctx, statements.ReadMetaInfo).Scan(&recordedVersion, &hexKey); err != nil || recordedVersion != statements.SchemaVersion {
+		return nil, protocol.NewError(protocol.CodeHomeBroken, "meta database header is invalid")
+	}
+	key, err := decodeCursorKey(hexKey)
+	if err != nil {
+		return nil, protocol.NewError(protocol.CodeHomeBroken, "meta database cursor key is invalid")
+	}
+	return key, nil
+}
+
+func newCursorKey() (string, error) {
+	var raw [32]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return "", internalError("cannot generate cursor key")
+	}
+	return hex.EncodeToString(raw[:]), nil
+}
+
+func decodeCursorKey(hexKey string) ([]byte, error) {
+	key, err := hex.DecodeString(hexKey)
+	if err != nil || len(key) != 32 {
+		return nil, errors.New("invalid cursor key")
+	}
+	return key, nil
 }
 
 func (s *Store) Close() error { return s.db.Close() }

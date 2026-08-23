@@ -6,9 +6,9 @@ const (
 	CreateMemoryInfo = `CREATE TABLE memory_info (
 		id INTEGER PRIMARY KEY CHECK(id = 1),
 		workspace_id INTEGER NOT NULL CHECK(workspace_id BETWEEN 1 AND 9007199254740991),
-		schema_version INTEGER NOT NULL CHECK(schema_version = 1)
+		schema_version INTEGER NOT NULL CHECK(schema_version = 2)
 	)`
-	InsertMemoryInfo = `INSERT INTO memory_info(id, workspace_id, schema_version) VALUES(1, ?, 1)`
+	InsertMemoryInfo = `INSERT INTO memory_info(id, workspace_id, schema_version) VALUES(1, ?, 2)`
 	ReadMemoryInfo   = `SELECT workspace_id, schema_version FROM memory_info WHERE id = 1`
 
 	CreateMemories = `CREATE TABLE memories (

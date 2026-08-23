@@ -2,9 +2,11 @@ package command
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/DecarbonizedGlucose/dsh-memory-note/internal/meta"
@@ -185,6 +187,40 @@ func TestMemoryListPagination(t *testing.T) {
 	wantError(t, call(t, ctx, storeRoot, "memory-list", map[string]any{
 		"workspace_id": wid, "cursor": "garbage",
 	}), protocol.CodeInvalidRequest)
+}
+
+func TestCursorTamperRejected(t *testing.T) {
+	key := make([]byte, 32)
+	for i := range key {
+		key[i] = byte(i)
+	}
+	cursor := encodeCursor(key, 1000, "mem_abc")
+	decoded, err := decodeCursor(key, cursor)
+	if err != nil || decoded.UpdatedAt != 1000 || decoded.MemoryID != "mem_abc" {
+		t.Fatalf("round trip = %#v, %v", decoded, err)
+	}
+
+	// A cursor signed by a different key is rejected.
+	otherKey := make([]byte, 32)
+	otherKey[0] = 0xff
+	if _, err := decodeCursor(otherKey, cursor); err == nil {
+		t.Fatalf("wrong-key cursor was accepted")
+	}
+
+	// A tampered payload (still valid base64 + JSON, but carrying the old
+	// signature) is rejected rather than silently changing the page start.
+	parts := strings.SplitN(cursor, ".", 2)
+	raw, _ := base64.RawURLEncoding.DecodeString(parts[0])
+	var forged listCursor
+	if err := json.Unmarshal(raw, &forged); err != nil {
+		t.Fatal(err)
+	}
+	forged.MemoryID = "mem_forged"
+	payload, _ := json.Marshal(forged)
+	forgedCursor := base64.RawURLEncoding.EncodeToString(payload) + "." + parts[1]
+	if _, err := decodeCursor(key, forgedCursor); err == nil {
+		t.Fatalf("tampered cursor was accepted")
+	}
 }
 
 func TestUnexpectedMemoryFileFailsClosed(t *testing.T) {

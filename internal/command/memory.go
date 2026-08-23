@@ -2,7 +2,9 @@ package command
 
 import (
 	"context"
+	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -95,20 +97,28 @@ func memoryList(ctx context.Context, storeRoot, sessionID, raw string) (protocol
 	if limit < 1 || limit > 200 {
 		return protocol.MemoryListData{}, protocol.Invalid("limit must be between 1 and 200")
 	}
-	var cursor *listCursor
-	if request.Cursor != nil {
-		decoded, err := decodeCursor(*request.Cursor)
-		if err != nil {
-			return protocol.MemoryListData{}, err
-		}
-		cursor = decoded
-	}
 
 	run, err := begin(ctx, storeRoot, sessionID, request.WorkspaceID, lockRead, true)
 	if err != nil {
 		return protocol.MemoryListData{}, err
 	}
 	defer run.Release()
+	// The cursor is authenticated with the per-HOME key, so it must be read
+	// from meta.db before any cursor is decoded or encoded.
+	cursorKey, err := run.metaStore.CursorKey(ctx)
+	if err != nil {
+		return protocol.MemoryListData{}, err
+	}
+
+	var cursor *listCursor
+	if request.Cursor != nil {
+		decoded, err := decodeCursor(cursorKey, *request.Cursor)
+		if err != nil {
+			return protocol.MemoryListData{}, err
+		}
+		cursor = decoded
+	}
+
 	store, err := run.memoryStore(ctx, request.WorkspaceID)
 	if err != nil {
 		return protocol.MemoryListData{}, err
@@ -150,7 +160,7 @@ func memoryList(ctx context.Context, storeRoot, sessionID, raw string) (protocol
 	}
 	if hasMore {
 		last := rows[len(rows)-1]
-		next := encodeCursor(last.UpdatedAt.Unix(), last.ID)
+		next := encodeCursor(cursorKey, last.UpdatedAt.Unix(), last.ID)
 		data.NextCursor = &next
 	}
 	if err := run.Commit(ctx); err != nil {
@@ -164,13 +174,32 @@ type listCursor struct {
 	MemoryID  string `json:"memory_id"`
 }
 
-func encodeCursor(updatedAt int64, memoryID string) string {
+// encodeCursor signs the keyset payload with the per-HOME HMAC key so that a
+// caller cannot forge or alter a cursor and silently change the pagination
+// starting point.
+func encodeCursor(key []byte, updatedAt int64, memoryID string) string {
 	raw, _ := json.Marshal(listCursor{UpdatedAt: updatedAt, MemoryID: memoryID})
-	return base64.RawURLEncoding.EncodeToString(raw)
+	payload := base64.RawURLEncoding.EncodeToString(raw)
+	mac := hmac.New(sha256.New, key)
+	mac.Write([]byte(payload))
+	return payload + "." + base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
 }
 
-func decodeCursor(value string) (*listCursor, error) {
-	raw, err := base64.RawURLEncoding.DecodeString(value)
+// decodeCursor verifies the HMAC before decoding the payload. Any modification
+// to the payload fails verification and returns invalid_request.
+func decodeCursor(key []byte, value string) (*listCursor, error) {
+	parts := strings.SplitN(value, ".", 2)
+	if len(parts) != 2 {
+		return nil, protocol.Invalid("cursor is invalid")
+	}
+	payload, signature := parts[0], parts[1]
+	mac := hmac.New(sha256.New, key)
+	mac.Write([]byte(payload))
+	provided, err := base64.RawURLEncoding.DecodeString(signature)
+	if err != nil || !hmac.Equal(provided, mac.Sum(nil)) {
+		return nil, protocol.Invalid("cursor is invalid")
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(payload)
 	if err != nil {
 		return nil, protocol.Invalid("cursor is invalid")
 	}
