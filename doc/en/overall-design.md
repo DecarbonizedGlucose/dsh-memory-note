@@ -79,7 +79,12 @@ DSH_MEMORY_NOTE_HOME/
     └── ...
 ```
 
-The default `DSH_MEMORY_NOTE_HOME` is `~/.local/share/dsh-memory-note/`. It may be overridden by the `DSH_MEMORY_NOTE_HOME` environment variable. The configured value must resolve to an absolute path.
+The default `DSH_MEMORY_NOTE_HOME` depends on the platform:
+
+- Unix-like systems (Linux, macOS, BSD): `~/.local/share/dsh-memory-note/`
+- Windows: `%LOCALAPPDATA%\dsh-memory-note` (falling back to `%USERPROFILE%\AppData\Local\dsh-memory-note` when `%LOCALAPPDATA%` is unset)
+
+It may be overridden by the `DSH_MEMORY_NOTE_HOME` environment variable. The configured value must resolve to an absolute path.
 
 The workspace itself stores no plugin database, WID marker, lock file, or other plugin-owned state. Moving or deleting a workspace directory therefore does not implicitly move or delete its memory database.
 
@@ -119,6 +124,20 @@ Every Session checks HOME before executing business logic.
 Initialization is built completely in a sibling temporary directory and published by an atomic rename. Concurrent initializers may race to publish, but after one succeeds, the others must discard their temporary layouts and reopen the published HOME.
 
 The implementation must reject unsafe path types such as symbolic links where they could redirect database or temporary-file operations outside HOME. Temporary names must be derived from the random session ID, created with private permissions, and never contain raw memory content.
+
+### 2.4 Platform filesystem adaptation
+
+Everything that differs by platform is centralized in the storage package and selected at build time with the `windows` build tag. It is the only place that branches on operating system; the rest of the core is platform-neutral.
+
+The platform-specific concerns are:
+
+- **default data directory**: the platform default described above;
+- **directory sync**: `fsync` on Unix-like systems; a no-op on Windows, which does not sync directories;
+- **path case normalization**: identity on case-sensitive filesystems; lowercasing on Windows so that path spellings differing only in case map to one identity.
+
+On Windows, workspace paths are lowercased before being stored in the database. Registering and resolving a workspace both apply this normalization, so the case variant a caller uses does not produce a different WID. The adapter never lowercases paths; normalization is a core-only responsibility applied at the register and resolve boundary.
+
+The install and uninstall entry points are likewise platform-specific: `scripts/install.sh` / `scripts/uninstall.sh` for Unix-like shells, and `scripts/install.ps1` / `scripts/uninstall.ps1` for Windows PowerShell.
 
 ## 3. Cross-process read/write locks
 

@@ -79,7 +79,12 @@ DSH_MEMORY_NOTE_HOME/
     └── ...
 ```
 
-默认的 `DSH_MEMORY_NOTE_HOME` 是 `~/.local/share/dsh-memory-note/`。它可被 `DSH_MEMORY_NOTE_HOME` 环境变量覆盖。配置的值必须解析为绝对路径。
+默认的 `DSH_MEMORY_NOTE_HOME` 取决于平台：
+
+- Unix 类系统（Linux、macOS、BSD）：`~/.local/share/dsh-memory-note/`
+- Windows：`%LOCALAPPDATA%\dsh-memory-note`（当 `%LOCALAPPDATA%` 未设置时，回退到 `%USERPROFILE%\AppData\Local\dsh-memory-note`）
+
+它可被 `DSH_MEMORY_NOTE_HOME` 环境变量覆盖。配置的值必须解析为绝对路径。
 
 工作区本身不存储任何插件数据库、WID 标记、锁文件或其他插件拥有的状态。因此，移动或删除工作区目录并不会隐式地移动或删除其记忆数据库。
 
@@ -119,6 +124,20 @@ SQLite 事务仍然负责记忆数据库内部的原子变更。`meta.db` 中的
 初始化完全在一个同级临时目录中完成，再通过一次原子重命名发布。并发的初始化进程可能竞争发布，但只要其中一个成功，其余进程就必须丢弃自己的临时布局并重新打开已发布的 HOME。
 
 实现必须拒绝不安全的路径类型，例如可能将数据库或临时文件操作重定向到 HOME 之外的符号链接。临时名称必须派生自随机会话 ID，以私有权限创建，并且绝不包含原始的记忆内容。
+
+### 2.4 平台文件系统适配
+
+所有因平台而异的行为都集中在存储包中，并通过 `windows` 构建标签在构建期选择。这是唯一按操作系统分支的地方；核心其余部分都是平台无关的。
+
+平台相关的关注点有：
+
+- **默认数据目录**：上文所述的平台默认值；
+- **目录同步**：在 Unix 类系统上 `fsync`；在 Windows 上是空操作，因为 Windows 不同步目录；
+- **路径大小写规范化**：在大小写敏感的文件系统上为恒等；在 Windows 上为小写，使仅大小写不同的路径写法映射到同一身份。
+
+在 Windows 上，工作区路径在存入数据库之前会被小写化。注册与解析工作区都会应用这一规范化，因此调用方使用的大小写变体不会产生不同的 WID。适配器从不做小写化；规范化是核心在注册与解析边界上独有的职责。
+
+安装与卸载入口同样是平台相关的：Unix 类 shell 使用 `scripts/install.sh` / `scripts/uninstall.sh`，Windows PowerShell 使用 `scripts/install.ps1` / `scripts/uninstall.ps1`。
 
 ## 3. 跨进程读/写锁
 

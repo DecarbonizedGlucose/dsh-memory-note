@@ -7,14 +7,45 @@ one-shot Go executable plus a thin TypeScript adapter bundle.
 DeepSeek Harness -> adapter (bundle) -> Go core -> SQLite
 ```
 
-## Storage layout
+## Quick start
 
+Requirements: `go`, `pnpm`, and `dsh` on PATH.
+
+**Unix-like (Linux / macOS / BSD):**
+
+```sh
+git clone https://github.com/DecarbonizedGlucose/dsh-memory-note
+cd dsh-memory-note
+scripts/install.sh [profile]    # default profile: web
 ```
-DSH_MEMORY_NOTE_HOME/               # default: ~/.local/share/dsh-memory-note
-    meta.db                         # metadata
-    memory/
-        workspace-WID-memory.db     # one database per workspace
+
+**Windows (PowerShell):**
+
+```powershell
+git clone https://github.com/DecarbonizedGlucose/dsh-memory-note
+cd dsh-memory-note
+.\scripts\install.ps1 [-Profile web]
 ```
+
+The install script builds the Go core into `GOBIN`, builds the adapter bundle,
+and registers it into the profile via `dsh plugin ... add link:`.
+
+After installing, make sure your `GOBIN` (`$(go env GOPATH)/bin`) is on PATH
+and restart the profile (`dsh --profile <name>`) so the tools load.
+
+Uninstall:
+
+```sh
+scripts/uninstall.sh [profile]         # Unix-like
+```
+
+```powershell
+.\scripts\uninstall.ps1 [-Profile web] # Windows
+```
+
+The uninstall script removes the bundle and the core binary, then asks whether
+to delete the whole memory-data directory (after hard safety checks — it never
+deletes a directory that is not clearly this tool's data directory).
 
 ## Usage
 
@@ -30,24 +61,20 @@ dsh-memory-note <subcommand> '<json-request>'
   `memory-update`, `memory-supersede`, `memory-invalidate`, `memory-delete`
 - Internal: `version`, `help`
 
-Memory data lives in `~/.local/share/dsh-memory-note` (override with
-`DSH_MEMORY_NOTE_HOME`). The full JSON contract is in
+The full JSON contract is in
 [`doc/en/protocol-v1-proposal.md`](doc/en/protocol-v1-proposal.md).
 
-## Install / uninstall
+## Storage layout
 
-Requirements: `go`, `pnpm`, and `dsh` on PATH.
-
-```sh
-git clone <repo-url>
-cd dsh-memory-note
-scripts/install.sh [profile]    # default profile: web
-scripts/uninstall.sh [profile]
+```
+DSH_MEMORY_NOTE_HOME/               # default: see platform below
+    meta.db                         # metadata
+    memory/
+        workspace-WID-memory.db     # one database per workspace
 ```
 
-`install.sh` builds the Go core into `GOBIN`, builds the adapter bundle, and
-registers it into the profile via `dsh plugin ... add link:`. `uninstall.sh`
-removes the bundle and the core binary; memory data is left untouched.
+- Unix-like (Linux / macOS / BSD): `~/.local/share/dsh-memory-note`
+- Windows: `%LOCALAPPDATA%\dsh-memory-note` (fallback
+  `%USERPROFILE%\AppData\Local\dsh-memory-note`)
 
-After installing, make sure `$(go env GOPATH)/bin` is on PATH and restart the
-profile (`dsh --profile <name>`) so the tools load.
+Override with `DSH_MEMORY_NOTE_HOME`.
