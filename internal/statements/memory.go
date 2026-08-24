@@ -6,9 +6,9 @@ const (
 	CreateMemoryInfo = `CREATE TABLE memory_info (
 		id INTEGER PRIMARY KEY CHECK(id = 1),
 		workspace_id INTEGER NOT NULL CHECK(workspace_id BETWEEN 1 AND 9007199254740991),
-		schema_version INTEGER NOT NULL CHECK(schema_version = 2)
+		schema_version INTEGER NOT NULL CHECK(schema_version = 3)
 	)`
-	InsertMemoryInfo = `INSERT INTO memory_info(id, workspace_id, schema_version) VALUES(1, ?, 2)`
+	InsertMemoryInfo = `INSERT INTO memory_info(id, workspace_id, schema_version) VALUES(1, ?, 3)`
 	ReadMemoryInfo   = `SELECT workspace_id, schema_version FROM memory_info WHERE id = 1`
 
 	CreateMemories = `CREATE TABLE memories (
@@ -36,6 +36,7 @@ const (
 		workspace_id INTEGER NOT NULL,
 		memory_id TEXT NOT NULL,
 		version INTEGER NOT NULL,
+		action TEXT NOT NULL,
 		content TEXT NOT NULL,
 		type TEXT,
 		scope TEXT,
@@ -52,6 +53,20 @@ const (
 		PRIMARY KEY (workspace_id, memory_id, version)
 	)`
 
+	CreateMemoryEvents = `CREATE TABLE memory_events (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		workspace_id INTEGER NOT NULL,
+		memory_id TEXT NOT NULL,
+		action TEXT NOT NULL CHECK(action IN ('create', 'update', 'supersede', 'invalidate')),
+		from_version INTEGER,
+		to_version INTEGER,
+		related_memory_id TEXT,
+		reason TEXT,
+		created_at INTEGER NOT NULL,
+		created_offset INTEGER NOT NULL CHECK(created_offset BETWEEN -840 AND 840)
+	)`
+	CreateMemoryEventsIndex = `CREATE INDEX memory_events_by_memory ON memory_events(workspace_id, memory_id, id)`
+
 	CreateMemoriesSearch = `CREATE INDEX memories_search ON memories(state, type, scope, updated_at, memory_id)`
 	CreateMemoriesList   = `CREATE INDEX memories_list ON memories(workspace_id, updated_at, memory_id)`
 
@@ -67,10 +82,27 @@ const (
 		metadata_json, state, version, supersedes, superseded_by, created_at, created_offset, updated_at, updated_offset)
 		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
-	InsertHistory = `INSERT INTO memory_history(workspace_id, memory_id, version, content, type, scope,
+	InsertHistory = `INSERT INTO memory_history(workspace_id, memory_id, version, action, content, type, scope,
 		source_json, metadata_json, state, supersedes, superseded_by, created_at, created_offset,
 		updated_at, updated_offset, archived_at)
-		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+
+	SelectHistoryColumns = `SELECT memory_id, workspace_id, content, type, scope, source_json, metadata_json,
+		state, version, supersedes, superseded_by, created_at, created_offset, updated_at, updated_offset FROM memory_history`
+	SelectHistoryVersion = SelectHistoryColumns + ` WHERE workspace_id = ? AND memory_id = ? AND version = ?`
+
+	InsertEvent = `INSERT INTO memory_events(workspace_id, memory_id, action, from_version, to_version,
+		related_memory_id, reason, created_at, created_offset)
+		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)`
+
+	SelectHistoryList = `SELECT version, action, state, updated_at, updated_offset, archived_at
+		FROM memory_history WHERE workspace_id = ? AND memory_id = ? ORDER BY version`
+
+	SelectLatestEventAction = `SELECT action FROM memory_events WHERE workspace_id = ? AND memory_id = ?
+		ORDER BY id DESC LIMIT 1`
+
+	DeleteMemoryEvents = `DELETE FROM memory_events WHERE workspace_id = ? AND memory_id = ?`
+	ClearMemoryEvents  = `DELETE FROM memory_events WHERE workspace_id = ?`
 
 	UpdateMemory = `UPDATE memories SET content = ?, type = ?, scope = ?, source_json = ?, metadata_json = ?,
 		state = ?, version = ?, supersedes = ?, superseded_by = ?, updated_at = ?, updated_offset = ?
@@ -94,6 +126,8 @@ var MemorySchema = []string{
 	CreateMemoryInfo,
 	CreateMemories,
 	CreateMemoryHistory,
+	CreateMemoryEvents,
+	CreateMemoryEventsIndex,
 	CreateMemoriesSearch,
 	CreateMemoriesList,
 }

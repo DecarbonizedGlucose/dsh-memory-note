@@ -29,6 +29,10 @@ func Run(ctx context.Context, storeRoot, sessionID, name, raw string) protocol.R
 		data, err = memoryList(ctx, storeRoot, sessionID, raw)
 	case "memory-get":
 		data, err = memoryGet(ctx, storeRoot, sessionID, raw)
+	case "memory-history":
+		data, err = memoryHistory(ctx, storeRoot, sessionID, raw)
+	case "memory-diff":
+		data, err = memoryDiff(ctx, storeRoot, sessionID, raw)
 	case "memory-create":
 		data, err = memoryCreate(ctx, storeRoot, sessionID, raw)
 	case "memory-update":

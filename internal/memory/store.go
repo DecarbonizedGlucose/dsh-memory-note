@@ -199,12 +199,13 @@ func (tx *Tx) Insert(ctx context.Context, memory protocol.Memory) error {
 }
 
 // Archive stores the pre-image of a successful update, supersede, or
-// invalidate. It must run in the same transaction as the mutation.
-func (tx *Tx) Archive(ctx context.Context, memory protocol.Memory, archivedAt int64) error {
+// invalidate, tagged with the action that produced it. It must run in the
+// same transaction as the mutation.
+func (tx *Tx) Archive(ctx context.Context, memory protocol.Memory, action string, archivedAt int64) error {
 	source, _ := json.Marshal(memory.Source)
 	metadata, _ := json.Marshal(memory.Metadata)
 	_, err := tx.ExecContext(ctx, statements.InsertHistory,
-		memory.WorkspaceID, memory.ID, memory.Version, memory.Content, nullable(memory.Type), nullable(memory.Scope),
+		memory.WorkspaceID, memory.ID, memory.Version, action, memory.Content, nullable(memory.Type), nullable(memory.Scope),
 		string(source), string(metadata), memory.State, nullable(memory.Supersedes), nullable(memory.SupersededBy),
 		memory.CreatedAt.Unix(), offsetMinutes(memory.CreatedAt),
 		memory.UpdatedAt.Unix(), offsetMinutes(memory.UpdatedAt), archivedAt)
@@ -212,6 +213,72 @@ func (tx *Tx) Archive(ctx context.Context, memory protocol.Memory, archivedAt in
 		return internalError("cannot archive memory version")
 	}
 	return nil
+}
+
+// InsertEvent writes one lightweight change-log row in the same transaction
+// as its mutation. It carries no content.
+func (tx *Tx) InsertEvent(ctx context.Context, workspaceID int64, memoryID, action string, fromVersion, toVersion *int64, relatedMemoryID, reason string, at time.Time) error {
+	_, err := tx.ExecContext(ctx, statements.InsertEvent,
+		workspaceID, memoryID, action, nullableInt(fromVersion), nullableInt(toVersion),
+		nullable(&relatedMemoryID), nullable(&reason), at.Unix(), offsetMinutes(protocol.Timestamp{Time: at}))
+	if err != nil {
+		return internalError("cannot record memory event")
+	}
+	return nil
+}
+
+// Version reads one exact historical version from the archive. It returns
+// memory_not_found when that version never existed.
+func (tx *Tx) Version(ctx context.Context, workspaceID int64, memoryID string, version int64) (protocol.Memory, error) {
+	return scanMemory(tx.QueryRowContext(ctx, statements.SelectHistoryVersion, workspaceID, memoryID, version))
+}
+
+// HistoryItem is one row of a memory's version history.
+type HistoryItem struct {
+	Version    int64
+	Action     string
+	State      string
+	UpdatedAt  protocol.Timestamp
+	ArchivedAt *protocol.Timestamp
+}
+
+// Versions lists the archived versions of one memory, ascending.
+func (tx *Tx) Versions(ctx context.Context, workspaceID int64, memoryID string) ([]HistoryItem, error) {
+	rows, err := tx.QueryContext(ctx, statements.SelectHistoryList, workspaceID, memoryID)
+	if err != nil {
+		return nil, internalError("cannot list memory versions")
+	}
+	defer rows.Close()
+	result := make([]HistoryItem, 0)
+	for rows.Next() {
+		var item HistoryItem
+		var updated, updatedOffset, archived int64
+		if err := rows.Scan(&item.Version, &item.Action, &item.State, &updated, &updatedOffset, &archived); err != nil {
+			return nil, internalError("cannot read memory version")
+		}
+		item.UpdatedAt = timestampAt(updated, updatedOffset)
+		archivedAt := timestampAt(archived, 0)
+		item.ArchivedAt = &archivedAt
+		result = append(result, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, internalError("cannot read memory versions")
+	}
+	return result, nil
+}
+
+// LatestAction returns the action of the newest event for a memory, used as
+// the current version's action in memory-history.
+func (tx *Tx) LatestAction(ctx context.Context, workspaceID int64, memoryID string) (string, error) {
+	var action string
+	err := tx.QueryRowContext(ctx, statements.SelectLatestEventAction, workspaceID, memoryID).Scan(&action)
+	if errors.Is(err, stdsql.ErrNoRows) {
+		return "create", nil
+	}
+	if err != nil {
+		return "", internalError("cannot read memory event")
+	}
+	return action, nil
 }
 
 func (tx *Tx) Update(ctx context.Context, memory protocol.Memory, oldVersion int64) error {
@@ -230,11 +297,15 @@ func (tx *Tx) Update(ctx context.Context, memory protocol.Memory, oldVersion int
 	return nil
 }
 
-// Delete removes the memory's full history, clears the other end of any
-// supersede relationship (bumping its version), and deletes the current row.
+// Delete removes the memory's full history, its event rows, clears the other
+// end of any supersede relationship (bumping its version), and deletes the
+// current row. A delete is a total erasure: no audit row remains.
 func (tx *Tx) Delete(ctx context.Context, memoryID string, version int64, now protocol.Timestamp) error {
 	if _, err := tx.ExecContext(ctx, statements.DeleteMemoryHistory, tx.wid, memoryID); err != nil {
 		return internalError("cannot delete memory history")
+	}
+	if _, err := tx.ExecContext(ctx, statements.DeleteMemoryEvents, tx.wid, memoryID); err != nil {
+		return internalError("cannot delete memory events")
 	}
 	if _, err := tx.ExecContext(ctx, statements.ClearRelationships,
 		memoryID, memoryID, now.Unix(), offsetMinutes(now), tx.wid, memoryID, memoryID); err != nil {
@@ -261,6 +332,9 @@ func (tx *Tx) Clear(ctx context.Context) (int64, error) {
 	}
 	if _, err := tx.ExecContext(ctx, statements.ClearMemoryHistory, tx.wid); err != nil {
 		return 0, internalError("cannot clear memory history")
+	}
+	if _, err := tx.ExecContext(ctx, statements.ClearMemoryEvents, tx.wid); err != nil {
+		return 0, internalError("cannot clear memory events")
 	}
 	return count, nil
 }
@@ -300,6 +374,13 @@ func scanMemory(row scanner) (protocol.Memory, error) {
 }
 
 func nullable(value *string) any {
+	if value == nil {
+		return nil
+	}
+	return *value
+}
+
+func nullableInt(value *int64) any {
 	if value == nil {
 		return nil
 	}

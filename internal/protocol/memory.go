@@ -97,12 +97,50 @@ type MemoryListData struct {
 type MemoryGetRequest struct {
 	WorkspaceID int64  `json:"workspace_id"`
 	MemoryID    string `json:"memory_id"`
+	Version     *int64 `json:"version,omitempty"`
 }
 type MemoryGetData struct{ MemoryResult }
+
+// HistoryItem is one version row of memory-history.
+type HistoryItem struct {
+	Version    int64      `json:"version"`
+	Action     string     `json:"action"`
+	State      string     `json:"state"`
+	UpdatedAt  Timestamp  `json:"updated_at"`
+	ArchivedAt *Timestamp `json:"archived_at"`
+}
+
+type MemoryHistoryRequest struct {
+	WorkspaceID int64  `json:"workspace_id"`
+	MemoryID    string `json:"memory_id"`
+}
+type MemoryHistoryData struct {
+	Versions []HistoryItem `json:"versions"`
+}
+
+type MemoryDiffRequest struct {
+	WorkspaceID int64  `json:"workspace_id"`
+	MemoryID    string `json:"memory_id"`
+	FromVersion int64  `json:"from_version"`
+	ToVersion   int64  `json:"to_version"`
+}
+
+type MemoryDiffChange struct {
+	Field string `json:"field"`
+	From  any    `json:"from"`
+	To    any    `json:"to"`
+}
+
+type MemoryDiffData struct {
+	FromVersion int64              `json:"from_version"`
+	ToVersion   int64              `json:"to_version"`
+	Changes     []MemoryDiffChange `json:"changes"`
+}
 
 type MemoryCreateRequest struct {
 	WorkspaceID int64 `json:"workspace_id"`
 	MemoryInput
+	Reason string `json:"reason,omitempty"`
 }
 type MemoryCreateData struct{ MemoryResult }
 
@@ -115,19 +153,24 @@ type MemoryUpdateRequest struct {
 	Scope           *string         `json:"scope,omitempty"`
 	Source          *[]string       `json:"source,omitempty"`
 	Metadata        *map[string]any `json:"metadata,omitempty"`
+	Reason          string          `json:"reason,omitempty"`
 }
 type MemoryUpdateData struct{ MemoryResult }
 
 type MemorySupersedeRequest struct {
 	MemoryTarget
-	New MemoryInput `json:"new"`
+	New    MemoryInput `json:"new"`
+	Reason string      `json:"reason,omitempty"`
 }
 type MemorySupersedeData struct {
 	Old Memory `json:"old"`
 	New Memory `json:"new"`
 }
 
-type MemoryInvalidateRequest struct{ MemoryTarget }
+type MemoryInvalidateRequest struct {
+	MemoryTarget
+	Reason string `json:"reason,omitempty"`
+}
 type MemoryInvalidateData struct{ MemoryResult }
 
 type MemoryDeleteRequest struct{ MemoryTarget }

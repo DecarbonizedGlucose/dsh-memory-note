@@ -3,6 +3,7 @@ package command
 import (
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -90,6 +91,32 @@ func cleanSource(values []string) ([]string, error) {
 		return nil, protocol.Invalid("source has too many items")
 	}
 	return result, nil
+}
+
+func cleanReason(value string) (string, error) {
+	cleaned := strings.TrimSpace(value)
+	if len(cleaned) > 512 {
+		return "", protocol.Invalid("reason is too long")
+	}
+	return cleaned, nil
+}
+
+// diffMemories compares two versions of the same memory and returns only the
+// fields that differ, each with from and to.
+func diffMemories(from, to protocol.Memory) []protocol.MemoryDiffChange {
+	changes := make([]protocol.MemoryDiffChange, 0, 6)
+	compare := func(field string, fromValue, toValue any) {
+		if !reflect.DeepEqual(fromValue, toValue) {
+			changes = append(changes, protocol.MemoryDiffChange{Field: field, From: fromValue, To: toValue})
+		}
+	}
+	compare("content", from.Content, to.Content)
+	compare("type", from.Type, to.Type)
+	compare("scope", from.Scope, to.Scope)
+	compare("source", from.Source, to.Source)
+	compare("metadata", from.Metadata, to.Metadata)
+	compare("state", from.State, to.State)
+	return changes
 }
 
 func cleanLabels(values []string) []string {

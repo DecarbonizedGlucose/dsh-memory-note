@@ -218,13 +218,23 @@ func memoryGet(ctx context.Context, storeRoot, sessionID, raw string) (protocol.
 	if err := checkMemoryRef(request.WorkspaceID, request.MemoryID); err != nil {
 		return protocol.MemoryGetData{}, err
 	}
-	item, run, store, tx, err := getMemory(ctx, storeRoot, sessionID, request.WorkspaceID, request.MemoryID, true)
+	if request.Version != nil && (*request.Version < 1 || *request.Version > protocol.MaxSafeInteger) {
+		return protocol.MemoryGetData{}, protocol.Invalid("version must be a positive safe integer")
+	}
+	current, run, store, tx, err := getMemory(ctx, storeRoot, sessionID, request.WorkspaceID, request.MemoryID, true)
 	if err != nil {
 		return protocol.MemoryGetData{}, err
 	}
 	defer run.Release()
 	defer store.Close()
 	defer tx.Rollback()
+	item := current
+	if request.Version != nil && *request.Version != current.Version {
+		item, err = tx.Version(ctx, request.WorkspaceID, request.MemoryID, *request.Version)
+		if err != nil {
+			return protocol.MemoryGetData{}, err
+		}
+	}
 	if err := tx.Commit(); err != nil {
 		return protocol.MemoryGetData{}, protocol.NewError(protocol.CodeInternal, "cannot finish memory read")
 	}
@@ -232,6 +242,103 @@ func memoryGet(ctx context.Context, storeRoot, sessionID, raw string) (protocol.
 		return protocol.MemoryGetData{}, err
 	}
 	return protocol.MemoryGetData{MemoryResult: protocol.MemoryResult{Memory: item}}, nil
+}
+
+func memoryHistory(ctx context.Context, storeRoot, sessionID, raw string) (protocol.MemoryHistoryData, error) {
+	var request protocol.MemoryHistoryRequest
+	if err := protocol.Decode(raw, &request); err != nil {
+		return protocol.MemoryHistoryData{}, err
+	}
+	if err := checkMemoryRef(request.WorkspaceID, request.MemoryID); err != nil {
+		return protocol.MemoryHistoryData{}, err
+	}
+	current, run, store, tx, err := getMemory(ctx, storeRoot, sessionID, request.WorkspaceID, request.MemoryID, true)
+	if err != nil {
+		return protocol.MemoryHistoryData{}, err
+	}
+	defer run.Release()
+	defer store.Close()
+	defer tx.Rollback()
+	archived, err := tx.Versions(ctx, request.WorkspaceID, request.MemoryID)
+	if err != nil {
+		return protocol.MemoryHistoryData{}, err
+	}
+	action, err := tx.LatestAction(ctx, request.WorkspaceID, request.MemoryID)
+	if err != nil {
+		return protocol.MemoryHistoryData{}, err
+	}
+	versions := make([]protocol.HistoryItem, 0, len(archived)+1)
+	// An archive row's action is the operation that archived it — which is
+	// the operation that produced the next version. So version k's producing
+	// action is the archive action of the row before it, and v1 is create.
+	for index, item := range archived {
+		producing := "create"
+		if index > 0 {
+			producing = archived[index-1].Action
+		}
+		versions = append(versions, protocol.HistoryItem{
+			Version: item.Version, Action: producing, State: item.State,
+			UpdatedAt: item.UpdatedAt, ArchivedAt: item.ArchivedAt,
+		})
+	}
+	versions = append(versions, protocol.HistoryItem{
+		Version: current.Version, Action: action, State: current.State,
+		UpdatedAt: current.UpdatedAt, ArchivedAt: nil,
+	})
+	if err := tx.Commit(); err != nil {
+		return protocol.MemoryHistoryData{}, protocol.NewError(protocol.CodeInternal, "cannot finish memory history")
+	}
+	if err := run.Commit(ctx); err != nil {
+		return protocol.MemoryHistoryData{}, err
+	}
+	return protocol.MemoryHistoryData{Versions: versions}, nil
+}
+
+func memoryDiff(ctx context.Context, storeRoot, sessionID, raw string) (protocol.MemoryDiffData, error) {
+	var request protocol.MemoryDiffRequest
+	if err := protocol.Decode(raw, &request); err != nil {
+		return protocol.MemoryDiffData{}, err
+	}
+	if err := checkMemoryRef(request.WorkspaceID, request.MemoryID); err != nil {
+		return protocol.MemoryDiffData{}, err
+	}
+	if request.FromVersion == request.ToVersion {
+		return protocol.MemoryDiffData{}, protocol.Invalid("from_version and to_version must differ")
+	}
+	for _, value := range []int64{request.FromVersion, request.ToVersion} {
+		if value < 1 || value > protocol.MaxSafeInteger {
+			return protocol.MemoryDiffData{}, protocol.Invalid("version must be a positive safe integer")
+		}
+	}
+	current, run, store, tx, err := getMemory(ctx, storeRoot, sessionID, request.WorkspaceID, request.MemoryID, true)
+	if err != nil {
+		return protocol.MemoryDiffData{}, err
+	}
+	defer run.Release()
+	defer store.Close()
+	defer tx.Rollback()
+	resolve := func(version int64) (protocol.Memory, error) {
+		if version == current.Version {
+			return current, nil
+		}
+		return tx.Version(ctx, request.WorkspaceID, request.MemoryID, version)
+	}
+	from, err := resolve(request.FromVersion)
+	if err != nil {
+		return protocol.MemoryDiffData{}, err
+	}
+	to, err := resolve(request.ToVersion)
+	if err != nil {
+		return protocol.MemoryDiffData{}, err
+	}
+	changes := diffMemories(from, to)
+	if err := tx.Commit(); err != nil {
+		return protocol.MemoryDiffData{}, protocol.NewError(protocol.CodeInternal, "cannot finish memory diff")
+	}
+	if err := run.Commit(ctx); err != nil {
+		return protocol.MemoryDiffData{}, err
+	}
+	return protocol.MemoryDiffData{FromVersion: request.FromVersion, ToVersion: request.ToVersion, Changes: changes}, nil
 }
 
 func memoryCreate(ctx context.Context, storeRoot, sessionID, raw string) (protocol.MemoryCreateData, error) {
@@ -243,6 +350,10 @@ func memoryCreate(ctx context.Context, storeRoot, sessionID, raw string) (protoc
 		return protocol.MemoryCreateData{}, err
 	}
 	input, err := cleanInput(request.MemoryInput)
+	if err != nil {
+		return protocol.MemoryCreateData{}, err
+	}
+	reason, err := cleanReason(request.Reason)
 	if err != nil {
 		return protocol.MemoryCreateData{}, err
 	}
@@ -258,6 +369,9 @@ func memoryCreate(ctx context.Context, storeRoot, sessionID, raw string) (protoc
 		return protocol.MemoryCreateData{}, err
 	}
 	if err := tx.Insert(ctx, item); err != nil {
+		return protocol.MemoryCreateData{}, err
+	}
+	if err := tx.InsertEvent(ctx, request.WorkspaceID, item.ID, "create", nil, &item.Version, "", reason, item.CreatedAt.Time); err != nil {
 		return protocol.MemoryCreateData{}, err
 	}
 	if err := commitMemory(ctx, run, tx); err != nil {
@@ -280,6 +394,10 @@ func memoryUpdate(ctx context.Context, storeRoot, sessionID, raw string) (protoc
 	if err := cleanUpdate(&request); err != nil {
 		return protocol.MemoryUpdateData{}, err
 	}
+	reason, err := cleanReason(request.Reason)
+	if err != nil {
+		return protocol.MemoryUpdateData{}, err
+	}
 	item, run, store, tx, err := getMemory(ctx, storeRoot, sessionID, request.WorkspaceID, request.MemoryID, false)
 	if err != nil {
 		return protocol.MemoryUpdateData{}, err
@@ -294,7 +412,10 @@ func memoryUpdate(ctx context.Context, storeRoot, sessionID, raw string) (protoc
 	applyUpdate(&item, request)
 	item.Version++
 	item.UpdatedAt = now()
-	if err := tx.Archive(ctx, previous, time.Now().Unix()); err != nil {
+	if err := tx.Archive(ctx, previous, "update", time.Now().Unix()); err != nil {
+		return protocol.MemoryUpdateData{}, err
+	}
+	if err := tx.InsertEvent(ctx, request.WorkspaceID, item.ID, "update", &previous.Version, &item.Version, "", reason, item.UpdatedAt.Time); err != nil {
 		return protocol.MemoryUpdateData{}, err
 	}
 	if err := tx.Update(ctx, item, previous.Version); err != nil {
@@ -318,6 +439,10 @@ func memorySupersede(ctx context.Context, storeRoot, sessionID, raw string) (pro
 	if err != nil {
 		return protocol.MemorySupersedeData{}, err
 	}
+	reason, err := cleanReason(request.Reason)
+	if err != nil {
+		return protocol.MemorySupersedeData{}, err
+	}
 	old, run, store, tx, err := getMemory(ctx, storeRoot, sessionID, request.WorkspaceID, request.MemoryID, false)
 	if err != nil {
 		return protocol.MemorySupersedeData{}, err
@@ -337,10 +462,16 @@ func memorySupersede(ctx context.Context, storeRoot, sessionID, raw string) (pro
 	old.Version++
 	old.SupersededBy = &newItem.ID
 	old.UpdatedAt = newItem.CreatedAt
-	if err := tx.Archive(ctx, previous, time.Now().Unix()); err != nil {
+	if err := tx.Archive(ctx, previous, "supersede", time.Now().Unix()); err != nil {
 		return protocol.MemorySupersedeData{}, err
 	}
 	if err := tx.Insert(ctx, newItem); err != nil {
+		return protocol.MemorySupersedeData{}, err
+	}
+	if err := tx.InsertEvent(ctx, request.WorkspaceID, old.ID, "supersede", &previous.Version, &old.Version, newItem.ID, reason, old.UpdatedAt.Time); err != nil {
+		return protocol.MemorySupersedeData{}, err
+	}
+	if err := tx.InsertEvent(ctx, request.WorkspaceID, newItem.ID, "create", nil, &newItem.Version, "", "", newItem.CreatedAt.Time); err != nil {
 		return protocol.MemorySupersedeData{}, err
 	}
 	if err := tx.Update(ctx, old, previous.Version); err != nil {
@@ -360,6 +491,10 @@ func memoryInvalidate(ctx context.Context, storeRoot, sessionID, raw string) (pr
 	if err := checkTarget(request.WorkspaceID, request.MemoryID, request.ExpectedVersion); err != nil {
 		return protocol.MemoryInvalidateData{}, err
 	}
+	reason, err := cleanReason(request.Reason)
+	if err != nil {
+		return protocol.MemoryInvalidateData{}, err
+	}
 	item, run, store, tx, err := getMemory(ctx, storeRoot, sessionID, request.WorkspaceID, request.MemoryID, false)
 	if err != nil {
 		return protocol.MemoryInvalidateData{}, err
@@ -374,7 +509,10 @@ func memoryInvalidate(ctx context.Context, storeRoot, sessionID, raw string) (pr
 	item.State = protocol.MemoryInvalid
 	item.Version++
 	item.UpdatedAt = now()
-	if err := tx.Archive(ctx, previous, time.Now().Unix()); err != nil {
+	if err := tx.Archive(ctx, previous, "invalidate", time.Now().Unix()); err != nil {
+		return protocol.MemoryInvalidateData{}, err
+	}
+	if err := tx.InsertEvent(ctx, request.WorkspaceID, item.ID, "invalidate", &previous.Version, &item.Version, "", reason, item.UpdatedAt.Time); err != nil {
 		return protocol.MemoryInvalidateData{}, err
 	}
 	if err := tx.Update(ctx, item, previous.Version); err != nil {

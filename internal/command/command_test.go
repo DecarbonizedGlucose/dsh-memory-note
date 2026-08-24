@@ -189,6 +189,140 @@ func TestMemoryListPagination(t *testing.T) {
 	}), protocol.CodeInvalidRequest)
 }
 
+func TestMemoryHistoryAndRollback(t *testing.T) {
+	ctx := context.Background()
+	storeRoot := filepath.Join(t.TempDir(), "store")
+	project := t.TempDir()
+	wid := wantData[protocol.WorkspaceRegisterData](t,
+		call(t, ctx, storeRoot, "workspace-register", map[string]any{"path": project})).Workspace.ID
+
+	created := wantData[protocol.MemoryCreateData](t, call(t, ctx, storeRoot, "memory-create", map[string]any{
+		"workspace_id": wid, "content": "Use SQLite.", "reason": "initial choice",
+	})).Memory
+	first := created.ID
+
+	updated := wantData[protocol.MemoryUpdateData](t, call(t, ctx, storeRoot, "memory-update", map[string]any{
+		"workspace_id": wid, "memory_id": first, "expected_version": 1,
+		"content": "Use SQLite in WAL mode.", "reason": "concurrency",
+	})).Memory
+	updatedAgain := wantData[protocol.MemoryUpdateData](t, call(t, ctx, storeRoot, "memory-update", map[string]any{
+		"workspace_id": wid, "memory_id": first, "expected_version": 2,
+		"content": "Use SQLite in WAL mode, busy_timeout 1000.",
+	})).Memory
+	if updatedAgain.Version != 3 {
+		t.Fatalf("version = %d, want 3", updatedAgain.Version)
+	}
+	_ = updated
+
+	// Version history: create, update, update; current version has no archived_at.
+	history := wantData[protocol.MemoryHistoryData](t, call(t, ctx, storeRoot, "memory-history", map[string]any{
+		"workspace_id": wid, "memory_id": first,
+	}))
+	if len(history.Versions) != 3 {
+		t.Fatalf("versions = %#v", history.Versions)
+	}
+	if history.Versions[0].Action != "create" || history.Versions[0].Version != 1 {
+		t.Fatalf("versions[0] = %#v", history.Versions[0])
+	}
+	if history.Versions[1].Action != "update" || history.Versions[2].Action != "update" {
+		t.Fatalf("versions = %#v", history.Versions)
+	}
+	if history.Versions[2].ArchivedAt != nil {
+		t.Fatalf("current version archived_at = %#v", history.Versions[2].ArchivedAt)
+	}
+	if history.Versions[0].ArchivedAt == nil {
+		t.Fatalf("v1 should be archived")
+	}
+
+	// Read an exact historical version.
+	historical := wantData[protocol.MemoryGetData](t, call(t, ctx, storeRoot, "memory-get", map[string]any{
+		"workspace_id": wid, "memory_id": first, "version": 1,
+	}))
+	if historical.Memory.Content != "Use SQLite." || historical.Memory.Version != 1 {
+		t.Fatalf("historical = %#v", historical.Memory)
+	}
+
+	// A version that never existed.
+	wantError(t, call(t, ctx, storeRoot, "memory-get", map[string]any{
+		"workspace_id": wid, "memory_id": first, "version": 99,
+	}), protocol.CodeMemoryNotFound)
+
+	// Rollback: an ordinary update copying the v1 content, append-only.
+	rolled := wantData[protocol.MemoryUpdateData](t, call(t, ctx, storeRoot, "memory-update", map[string]any{
+		"workspace_id": wid, "memory_id": first, "expected_version": 3,
+		"content": "Use SQLite.", "reason": "rollback to v1",
+	})).Memory
+	if rolled.Version != 4 || rolled.Content != "Use SQLite." {
+		t.Fatalf("rolled = %#v", rolled)
+	}
+	afterRollback := wantData[protocol.MemoryHistoryData](t, call(t, ctx, storeRoot, "memory-history", map[string]any{
+		"workspace_id": wid, "memory_id": first,
+	}))
+	if len(afterRollback.Versions) != 4 {
+		t.Fatalf("versions after rollback = %#v", afterRollback.Versions)
+	}
+}
+
+func TestMemoryDiff(t *testing.T) {
+	ctx := context.Background()
+	storeRoot := filepath.Join(t.TempDir(), "store")
+	project := t.TempDir()
+	wid := wantData[protocol.WorkspaceRegisterData](t,
+		call(t, ctx, storeRoot, "workspace-register", map[string]any{"path": project})).Workspace.ID
+	created := wantData[protocol.MemoryCreateData](t, call(t, ctx, storeRoot, "memory-create", map[string]any{
+		"workspace_id": wid, "content": "Use SQLite.",
+	})).Memory
+	wantData[protocol.MemoryUpdateData](t, call(t, ctx, storeRoot, "memory-update", map[string]any{
+		"workspace_id": wid, "memory_id": created.ID, "expected_version": 1,
+		"content": "Use SQLite in WAL mode.", "type": "decision",
+	}))
+
+	diff := wantData[protocol.MemoryDiffData](t, call(t, ctx, storeRoot, "memory-diff", map[string]any{
+		"workspace_id": wid, "memory_id": created.ID, "from_version": 1, "to_version": 2,
+	}))
+	fields := make(map[string]bool)
+	for _, change := range diff.Changes {
+		fields[change.Field] = true
+	}
+	if !fields["content"] || !fields["type"] {
+		t.Fatalf("changes = %#v", diff.Changes)
+	}
+	if len(diff.Changes) != 2 {
+		t.Fatalf("changes = %#v", diff.Changes)
+	}
+
+	wantError(t, call(t, ctx, storeRoot, "memory-diff", map[string]any{
+		"workspace_id": wid, "memory_id": created.ID, "from_version": 1, "to_version": 1,
+	}), protocol.CodeInvalidRequest)
+	wantError(t, call(t, ctx, storeRoot, "memory-diff", map[string]any{
+		"workspace_id": wid, "memory_id": created.ID, "from_version": 1, "to_version": 99,
+	}), protocol.CodeMemoryNotFound)
+}
+
+func TestDeleteErasesHistory(t *testing.T) {
+	ctx := context.Background()
+	storeRoot := filepath.Join(t.TempDir(), "store")
+	project := t.TempDir()
+	wid := wantData[protocol.WorkspaceRegisterData](t,
+		call(t, ctx, storeRoot, "workspace-register", map[string]any{"path": project})).Workspace.ID
+	created := wantData[protocol.MemoryCreateData](t, call(t, ctx, storeRoot, "memory-create", map[string]any{
+		"workspace_id": wid, "content": "Use SQLite.",
+	})).Memory
+	wantData[protocol.MemoryUpdateData](t, call(t, ctx, storeRoot, "memory-update", map[string]any{
+		"workspace_id": wid, "memory_id": created.ID, "expected_version": 1, "content": "v2",
+	}))
+	wantData[protocol.MemoryDeleteData](t, call(t, ctx, storeRoot, "memory-delete", map[string]any{
+		"workspace_id": wid, "memory_id": created.ID, "expected_version": 2,
+	}))
+	// After a total erasure, history and historical versions are gone.
+	wantError(t, call(t, ctx, storeRoot, "memory-history", map[string]any{
+		"workspace_id": wid, "memory_id": created.ID,
+	}), protocol.CodeMemoryNotFound)
+	wantError(t, call(t, ctx, storeRoot, "memory-get", map[string]any{
+		"workspace_id": wid, "memory_id": created.ID, "version": 1,
+	}), protocol.CodeMemoryNotFound)
+}
+
 func TestCursorTamperRejected(t *testing.T) {
 	key := make([]byte, 32)
 	for i := range key {
