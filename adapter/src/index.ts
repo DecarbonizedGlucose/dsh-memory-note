@@ -31,5 +31,5 @@ export function apply(ctx: Context, config: Config) {
     timeoutMs: config.timeoutMs,
     home: config.home,
   });
-  console.log("[memory-note] plugin loaded: 13 tools registered");
+  console.log("[memory-note] plugin loaded: 15 tools registered");
 }

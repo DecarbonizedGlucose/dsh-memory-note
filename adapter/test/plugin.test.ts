@@ -151,11 +151,12 @@ test("UI cards hide protocol handles from humans", () => {
   assert.doesNotMatch(meta.text, /mem_|version|state|workspace_id/);
 });
 
-test("apply registers exactly the 13 business tools", () => {
+test("apply registers exactly the 15 business tools", () => {
   const { tools } = makeContext();
-  assert.equal(tools.length, 13);
+  assert.equal(tools.length, 15);
   const names = tools.map((tool) => tool.name);
   assert.ok(names.includes("memory_create") && names.includes("workspace_register"));
+  assert.ok(names.includes("memory_history") && names.includes("memory_diff"));
   assert.ok(!names.includes("version") && !names.includes("help"));
 });
 

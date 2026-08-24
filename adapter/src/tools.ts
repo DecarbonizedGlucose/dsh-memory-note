@@ -115,7 +115,18 @@ export const parameterSpecs: Record<string, Record<string, ParamSpec>> = {
     limit: { type: "number", description: "1..200, default 50." },
     cursor: { type: "string", description: "Opaque pagination cursor; pass back verbatim." },
   },
-  "memory-get": { workspace_id: workspaceId, memory_id: memoryId },
+  "memory-get": {
+    workspace_id: workspaceId,
+    memory_id: memoryId,
+    version: { type: "number", description: "Read that exact historical version instead of the current one." },
+  },
+  "memory-history": { workspace_id: workspaceId, memory_id: memoryId },
+  "memory-diff": {
+    workspace_id: workspaceId,
+    memory_id: memoryId,
+    from_version: { type: "number", required: true, description: "First version to compare." },
+    to_version: { type: "number", required: true, description: "Second version to compare; must differ." },
+  },
   "memory-create": {
     workspace_id: workspaceId,
     content: { type: "string", required: true, description: "The fact to remember." },
@@ -127,6 +138,7 @@ export const parameterSpecs: Record<string, Record<string, ParamSpec>> = {
       additionalProperties: true,
       description: "Caller-defined extension information.",
     },
+    reason: { type: "string", description: "Why this is being recorded (audit only)." },
   },
   "memory-update": {
     workspace_id: workspaceId,
@@ -141,14 +153,21 @@ export const parameterSpecs: Record<string, Record<string, ParamSpec>> = {
       additionalProperties: true,
       description: "Whole replacement; {} clears.",
     },
+    reason: { type: "string", description: "Why this revision is made (audit only)." },
   },
   "memory-supersede": {
     workspace_id: workspaceId,
     memory_id: memoryId,
     expected_version: expectedVersion,
     new: { ...memoryInput, required: true },
+    reason: { type: "string", description: "Why the old fact is replaced (audit only)." },
   },
-  "memory-invalidate": { workspace_id: workspaceId, memory_id: memoryId, expected_version: expectedVersion },
+  "memory-invalidate": {
+    workspace_id: workspaceId,
+    memory_id: memoryId,
+    expected_version: expectedVersion,
+    reason: { type: "string", description: "Why the fact is no longer true (audit only)." },
+  },
   "memory-delete": { workspace_id: workspaceId, memory_id: memoryId, expected_version: expectedVersion },
 };
 
@@ -203,7 +222,17 @@ const TOOL_NAMES: Record<string, { name: string; description: string }> = {
   "memory-get": {
     name: "memory_get",
     description:
-      "Read one memory precisely by ID, including content, version, source, state, and replacement relationship. The fine-grained read before a version-sensitive write.",
+      "Read one memory precisely by ID, including content, version, source, state, and replacement relationship. An optional version reads that exact historical version (the preview step before a rollback).",
+  },
+  "memory-history": {
+    name: "memory_history",
+    description:
+      "List the version history of one memory: each version's number, producing action, state, and times, without content. Use memory_get with a version to read a full historical version.",
+  },
+  "memory-diff": {
+    name: "memory_diff",
+    description:
+      "Compare two existing versions of one memory and return only the fields that changed, each with from and to values.",
   },
   "memory-create": {
     name: "memory_create",
@@ -238,6 +267,13 @@ const STATE_LABELS: Record<string, string> = {
   active: "生效中",
   superseded: "已被取代",
   invalid: "已失效",
+};
+
+const ACTION_LABELS: Record<string, string> = {
+  create: "创建",
+  update: "更新",
+  supersede: "取代",
+  invalidate: "失效",
 };
 
 const ERROR_LABELS: Record<string, string> = {
@@ -333,6 +369,30 @@ const renderers: Record<string, Renderer> = {
   "memory-get": (_args, value) => [
     { type: "text", text: renderMemory(value.memory as Record<string, JsonValue>) },
   ],
+  "memory-history": (_args, value) => {
+    const versions = (value.versions as Array<Record<string, JsonValue>>) ?? [];
+    const lines = versions.map((item) => {
+      const version = item.version ?? "";
+      const action = ACTION_LABELS[String(item.action ?? "")] ?? String(item.action ?? "");
+      const state = STATE_LABELS[String(item.state ?? "")] ?? String(item.state ?? "");
+      const updated = formatDate(item.updated_at);
+      const archived = item.archived_at === null ? null : formatDate(item.archived_at);
+      const tail = archived ? `，${archived} 被下一版本取代` : "（当前）";
+      return `- 版本 ${version} ${action}，${state}，${updated}${tail}`;
+    });
+    return [{ type: "text", text: lines.length > 0 ? lines.join("\n") : "没有版本历史" }];
+  },
+  "memory-diff": (_args, value) => {
+    const changes = (value.changes as Array<Record<string, JsonValue>>) ?? [];
+    const lines = changes.map((change) => {
+      const field = String(change.field ?? "");
+      const from = JSON.stringify(change.from ?? null);
+      const to = JSON.stringify(change.to ?? null);
+      return `- ${field}：${from} -> ${to}`;
+    });
+    const header = `版本 ${value.from_version ?? ""} 与 ${value.to_version ?? ""} 的差异`;
+    return [{ type: "text", text: lines.length > 0 ? `${header}\n${lines.join("\n")}` : `${header}\n无差异` }];
+  },
   "memory-create": (_args, value) => [
     { type: "text", text: `已记录：\n${renderMemory(value.memory as Record<string, JsonValue>)}` },
   ],
@@ -373,6 +433,8 @@ const resultTitles: Record<string, string> = {
   "memory-search": "记忆检索",
   "memory-list": "记忆列表",
   "memory-get": "记忆详情",
+  "memory-history": "版本历史",
+  "memory-diff": "版本对比",
   "memory-create": "已记录记忆",
   "memory-update": "已更新记忆",
   "memory-supersede": "已取代记忆",
@@ -401,6 +463,14 @@ function presentationMeta(subcommand: string, value: Record<string, JsonValue>):
       const items = (value.memories as Array<Record<string, JsonValue>>) ?? [];
       return { text: `共 ${items.length} 条记忆` };
     }
+    case "memory-history": {
+      const versions = (value.versions as Array<Record<string, JsonValue>>) ?? [];
+      return { text: `共 ${versions.length} 个版本` };
+    }
+    case "memory-diff": {
+      const changes = (value.changes as Array<Record<string, JsonValue>>) ?? [];
+      return { text: `${changes.length} 处变化` };
+    }
     case "memory-supersede":
       return { text: cleanMemoryText(value.new as Record<string, JsonValue>) };
     case "memory-delete":
@@ -412,7 +482,14 @@ function presentationMeta(subcommand: string, value: Record<string, JsonValue>):
 
 function cardKind(subcommand: string): "read" | "search" | undefined {
   if (subcommand === "memory-search") return "search";
-  if (subcommand === "workspace-resolve" || subcommand === "memory-get" || subcommand === "memory-list") return "read";
+  if (
+    subcommand === "workspace-resolve" ||
+    subcommand === "memory-get" ||
+    subcommand === "memory-list" ||
+    subcommand === "memory-history" ||
+    subcommand === "memory-diff"
+  )
+    return "read";
   return undefined;
 }
 

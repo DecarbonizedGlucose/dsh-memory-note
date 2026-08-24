@@ -27,10 +27,10 @@ interface InvalidFixture {
 }
 
 const valid = JSON.parse(
-  readFileSync(path.join(root, "protocol", "v1", "fixtures", "valid", "requests.json"), "utf8"),
+  readFileSync(path.join(root, "protocol", "v2", "fixtures", "valid", "requests.json"), "utf8"),
 ) as ValidFixture[];
 const invalid = JSON.parse(
-  readFileSync(path.join(root, "protocol", "v1", "fixtures", "invalid", "requests.json"), "utf8"),
+  readFileSync(path.join(root, "protocol", "v2", "fixtures", "invalid", "requests.json"), "utf8"),
 ) as InvalidFixture[];
 
 // The implicit parameter root stays open in the Harness tool DSL and format
@@ -42,6 +42,7 @@ const goOnly = new Set([
   "decimal-integer",
   "exponent-integer",
   "unknown-field",
+  "history-unknown-field",
   "old-envelope",
   "old-update-patch",
   "timestamp-no-offset",
