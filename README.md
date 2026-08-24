@@ -59,12 +59,13 @@ dsh-memory-note <subcommand> '<json-request>'
 
 - Workspace: `workspace-resolve`, `workspace-register`, `workspace-rebind`,
   `workspace-clear`, `workspace-delete`
-- Memory: `memory-search`, `memory-list`, `memory-get`, `memory-create`,
-  `memory-update`, `memory-supersede`, `memory-invalidate`, `memory-delete`
+- Memory: `memory-search`, `memory-list`, `memory-get`, `memory-history`,
+  `memory-diff`, `memory-create`, `memory-update`, `memory-supersede`,
+  `memory-invalidate`, `memory-delete`
 - Internal: `version`, `help`
 
 The full JSON contract is in
-[`doc/en/protocol-v1-proposal.md`](doc/en/protocol-v1-proposal.md).
+[`doc/en/protocol-v2-proposal.md`](doc/en/protocol-v2-proposal.md).
 
 ## Storage layout
 

@@ -58,12 +58,13 @@ dsh-memory-note <subcommand> '<json-request>'
 
 - 工作区：`workspace-resolve`、`workspace-register`、`workspace-rebind`、
   `workspace-clear`、`workspace-delete`
-- 记忆：`memory-search`、`memory-list`、`memory-get`、`memory-create`、
-  `memory-update`、`memory-supersede`、`memory-invalidate`、`memory-delete`
+- 记忆：`memory-search`、`memory-list`、`memory-get`、`memory-history`、
+  `memory-diff`、`memory-create`、`memory-update`、`memory-supersede`、
+  `memory-invalidate`、`memory-delete`
 - 内部命令：`version`、`help`
 
 完整 JSON 契约见
-[`doc/zh/protocol-v1-proposal.md`](doc/zh/protocol-v1-proposal.md)。
+[`doc/zh/protocol-v2-proposal.md`](doc/zh/protocol-v2-proposal.md)。
 
 ## 存储结构
 

@@ -1,6 +1,6 @@
 # Overall Design
 
-This document defines the overall design of `dsh-memory-note`. It defines the runtime structure, component responsibilities, storage boundaries, concurrency model, and memory lifecycle. The exact JSON request, response, and error contracts are defined separately by `protocol-v1-proposal.md`.
+This document defines the overall design of `dsh-memory-note`. It defines the runtime structure, component responsibilities, storage boundaries, concurrency model, and memory lifecycle. The exact JSON request, response, and error contracts are defined separately by `protocol-v2-proposal.md`.
 
 The project is local and lightweight. Its core responsibilities are safe one-shot execution, workspace identity independent of paths, cross-process coordination, explicit memory state transitions, optimistic version checks, and a strict user-approval boundary.
 
@@ -175,16 +175,20 @@ Memory database transactions provide atomicity for each command:
 - `memory-create`, `memory-update`, `memory-invalidate`, and `memory-delete` each complete in one transaction;
 - `memory-supersede` changes the old record, creates the new record, and establishes both relationship fields in one transaction;
 - `workspace-clear` removes all memory rows in one transaction;
-- `memory-search` and `memory-list` run in read-only transactions and never mutate data;
+- `memory-search`, `memory-list`, `memory-get`, `memory-history`, and `memory-diff` run in read-only transactions and never mutate data;
 - a successful response is emitted only after the transaction commits.
 
 All SQL values use bound parameters. Foreign-key enforcement is enabled for every connection. SQLite busy handling is bounded; it must not cause an invocation to wait forever.
 
 Each memory has a monotonically increasing `version`. Mutating an existing memory requires `expected_version`; comparison and mutation occur in the same transaction. A mismatch returns `version_conflict` without changing data.
 
-This is optimistic concurrency control with MVCC-like version semantics at the application level. It prevents stale LLM proposals or concurrent Sessions from silently overwriting a newer fact. It is not a promise that every historical version remains queryable.
+This is optimistic concurrency control with MVCC-like version semantics at the application level. It prevents stale LLM proposals or concurrent Sessions from silently overwriting a newer fact.
 
-Every successful `memory-update`, `memory-supersede`, or `memory-invalidate` archives the replaced record as an internal historical version. `memory-delete` removes the current record together with all of its archived versions, and `workspace-clear` removes all records and all history in one transaction. Historical versions are internal audit data and are never exposed through the JSON protocol.
+Every successful `memory-update`, `memory-supersede`, or `memory-invalidate` archives the replaced record as a historical version carrying the operation (`action`) that produced it; every mutation also writes one lightweight `memory_events` row (action, from/to version, related ID, reason, time — no content) in the same transaction. Historical versions are readable through `memory-get` with a `version` argument and through `memory-history`; events are internal audit data not exposed by any read command.
+
+A rollback is an ordinary `memory-update` whose content copies a previously read historical version; the version increments (append-only) and no version is ever deleted by a rollback. `memory-delete` removes the current record together with all of its archived versions and its events, and `workspace-clear` removes all records, history, and events in one transaction.
+
+`memory_id` and `version` are model handles: the protocol carries them for precise location and concurrency checks, but the adapter's user-visible surfaces render only memory content and never show these handles.
 
 ## 5. TypeScript layer responsibilities
 
@@ -227,11 +231,19 @@ Retrieves candidate memories by query and filter. Filtering dimensions include k
 
 ### `memory-get`
 
-Reads one memory precisely by `memory_id`, including its full content, current version, source, state, and replacement relationship. This is the fine-grained read used before proposing a version-sensitive write.
+Reads one memory precisely by `memory_id`, including its full content, current version, source, state, and replacement relationship. An optional `version` argument reads that exact historical version instead of the current one — the preview step before a rollback. This is the fine-grained read used before proposing a version-sensitive write.
 
 ### `memory-list`
 
 Lists the memories of a workspace in any state, ordered by `updated_at` and then `memory_id`, with cursor pagination. It returns compact rows without content, sources, or metadata; `memory-get` is the fine-grained read for a full record.
+
+### `memory-history`
+
+Lists the version history of one memory in ascending `version` order: each entry carries version, the action that produced it, its state and timestamps, without content. Combined with `memory-get`'s `version` argument it supports tracing and rollback preview.
+
+### `memory-diff`
+
+Compares two existing versions of one memory and returns only the fields that changed, each with `from` and `to`.
 
 ### `memory-create`
 
@@ -306,9 +318,9 @@ If the process terminates before emitting a valid response, the adapter reports 
 
 ## 10. Versioning and compatibility
 
-There is exactly one user-facing version: the **application version** (currently `1.0.0`), shared by the Go core and the TypeScript adapter bundle. Its single source is `internal/version`; the `version` subcommand prints it and the adapter mirrors it in `package.json`. Release builds may override it with `-ldflags "-X .../internal/version.Version=X.Y.Z"`.
+There is exactly one user-facing version: the **application version** (currently `2.0.0`), shared by the Go core and the TypeScript adapter bundle. Its single source is `internal/version`; the `version` subcommand prints it and the adapter mirrors it in `package.json`. Release builds may override it with `-ldflags "-X .../internal/version.Version=X.Y.Z"`.
 
-- **The protocol version tracks the major component.** Releases `1.x.x` implement protocol `v1`; a protocol breaking change (protocol §11) becomes protocol `v2` and bumps the application version to `2.0.0`. The core and the adapter must share the same major version and protocol.
+- **The protocol version tracks the major component.** Releases `2.x.x` implement protocol `v2` (this branch); protocol `v1` was implemented by `1.x.x`. A protocol breaking change (protocol §11) becomes protocol `v3` and bumps the application version to `3.0.0`. The core and the adapter must share the same major version and protocol.
 - **The SQL schema version is an internal migration counter and never follows releases.** It increments only when table structures change; opening a database checks it and fails closed with `schema_mismatch` — data is never silently migrated or rebuilt. A `1.0.x` bugfix release therefore never invalidates existing databases.
 
 Version numbers are labels; compatibility comes from the mechanisms that are actually exercised: the shared Go/TS request fixtures pin the core/adapter contract, the `schema_version` gate pins databases, and every mismatch fails closed instead of being repaired silently.

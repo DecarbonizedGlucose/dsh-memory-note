@@ -1,6 +1,8 @@
-# One-shot Command Protocol v1
+# One-shot Command Protocol v2
 
 This document defines the public command protocol of the `dsh-memory-note` core program: what each subcommand takes, what it returns, and how failures are reported. The storage layer's tables, SQL statements, and invariants are covered separately by `sql-standard.md`; where the two disagree, this document wins.
+
+Protocol v2 is implemented by application releases `2.x.x` and is **not compatible with v1**: field-level changes (kind/label replace type/scope, mutation `reason`, version-aware reads, new history subcommands, FTS5 search) are documented in `doc/localdoc/大版本v2变更计划.md` as that plan lands. The `version` subcommand reports the application version, whose major component is the protocol version.
 
 The protocol is not JSON-RPC 2.0. The subcommand already carries the method, so requests do not add a `jsonrpc`, `method`, `params`, or `request_id` wrapper.
 
@@ -19,7 +21,7 @@ dsh-memory-note <subcommand> '<request-json>'
 
 `version` and `help` are commands of the core program itself. They are not agent tools and do not use the JSON protocol:
 
-- `version`: prints one application version string to stdout (e.g. `1.0.0`, shared by the core and the adapter) and exits `0`; the output is not JSON.
+- `version`: prints one application version string to stdout (e.g. `2.0.0`, shared by the core and the adapter) and exits `0`; the output is not JSON.
 - `help`: prints usage text to stderr and exits `0`; the output is not JSON.
 - Malformed argv: prints usage to stderr and exits `2` with no JSON response.
 
@@ -127,7 +129,15 @@ A response must not omit any of these fields just because a value is empty.
 
 Go does not interpret the natural-language meaning of `type`, `scope`, `source`, or `metadata`.
 
-### 4.3 Workspace
+### 4.3 Mutation reason
+
+Every write command that changes a memory's content or state (`memory-create`, `memory-update`, `memory-supersede`, `memory-invalidate`) accepts an optional `reason` string: why this change is made. It is trimmed; empty means unset; at most 512 bytes. The reason is recorded in the internal `memory_events` table (see `sql-standard.md`); it never changes memory content. `memory-delete` takes no reason — it is a total erasure that leaves no audit row.
+
+### 4.4 Handle fields
+
+`memory_id`, `version`, and citations are **model handles**: the protocol carries them so the model can locate and check versions precisely, but the adapter's user-visible surfaces (user cards, approval descriptions, injected context) render only memory content and natural-language descriptions — they never show these handles or raw protocol fields.
+
+### 4.5 Workspace
 
 ```json
 {
@@ -152,6 +162,8 @@ Go does not interpret the natural-language meaning of `type`, `scope`, `source`,
 | `memory-search` | read | no |
 | `memory-list` | read | no |
 | `memory-get` | read | no |
+| `memory-history` | read | no |
+| `memory-diff` | read | no |
 | `memory-create` | write | yes |
 | `memory-update` | write | yes |
 | `memory-supersede` | write | yes |
@@ -174,7 +186,7 @@ Response data:
 {"workspace": null}
 ```
 
-- `path` is validated as in §4.3: a missing, non-directory, or non-absolute path returns `invalid_request`.
+- `path` is validated as in §4.5: a missing, non-directory, or non-absolute path returns `invalid_request`.
 - When registered, `workspace` is the full Workspace object; otherwise it is null.
 - If HOME does not exist yet, the invocation initializes HOME atomically (per the overall design) and then returns `workspace: null`. This initialization registers no workspace and creates no memory.
 
@@ -200,7 +212,7 @@ Response data:
 }
 ```
 
-- `path` is validated as in §4.3, otherwise `invalid_request`.
+- `path` is validated as in §4.5, otherwise `invalid_request`.
 - When HOME does not exist, the Session first initializes the full storage layout atomically, then registers the workspace.
 - Registering an already-registered canonical path returns the existing Workspace with `created: false`.
 - One canonical path cannot belong to two WIDs.
@@ -222,7 +234,7 @@ Response data:
 {"workspace": {"workspace_id": 1, "path": "/new/workspace/path", "created_at": "2026-08-20T01:02:03+08:00", "updated_at": "2026-08-21T01:02:03+08:00"}}
 ```
 
-- `path` is validated as in §4.3, otherwise `invalid_request`.
+- `path` is validated as in §4.5, otherwise `invalid_request`.
 - Only the path mapping in `meta.db` changes; the memory DB is not moved.
 - If the new path already belongs to another WID, the command returns `workspace_path_used`.
 - If the new canonical path equals the current path, it is a no-op: success, the original Workspace, `updated_at` unchanged.
@@ -330,8 +342,12 @@ A SearchHit's `type`/`scope` are null when unset. `snippet` is the first 240 byt
 Request:
 
 ```json
-{"workspace_id": 1, "memory_id": "mem_..."}
+{"workspace_id": 1, "memory_id": "mem_...", "version": 2}
 ```
+
+- `workspace_id` and `memory_id` are required.
+- `version` is optional. Without it, the current version is returned. With it, that exact historical version is returned from the internal archive; the response `memory` carries that version's full field values.
+- A version that never existed returns `memory_not_found`.
 
 Response data:
 
@@ -340,6 +356,8 @@ Response data:
 ```
 
 Any state may be read. A missing memory returns `memory_not_found`.
+
+Reading a historical version is the preview step for a rollback; a rollback itself is an ordinary `memory-update` whose content copies the target version (§7.5). Rollback never deletes versions.
 
 ### 7.3 `memory-list`
 
@@ -390,13 +408,14 @@ Request:
   "type": "decision",
   "scope": "storage",
   "source": ["conversation:123"],
-  "metadata": {"reason": "local-first"}
+  "metadata": {"reason": "local-first"},
+  "reason": "chosen for local-first storage"
 }
 ```
 
 Response data: `{"memory": <full Memory>}`.
 
-The new record is `active` with `version` 1.
+The new record is `active` with `version` 1. `reason` is optional (rules per §4.3); it is recorded in the internal event log only.
 
 ### 7.5 `memory-update`
 
@@ -411,11 +430,13 @@ Request:
   "type": "decision",
   "scope": "storage",
   "source": ["conversation:456"],
-  "metadata": {"reason": "better concurrency"}
+  "metadata": {"reason": "better concurrency"},
+  "reason": "WAL mode improves concurrent access"
 }
 ```
 
 - `workspace_id`, `memory_id`, and `expected_version` are required.
+- `reason` is optional (rules per §4.3).
 - At least one of `content`/`type`/`scope`/`source`/`metadata` must appear.
 - A missing field keeps its current value.
 - `type: ""` or `scope: ""` clears the field.
@@ -423,11 +444,13 @@ Request:
 - Every field replaces wholesale; nothing merges or appends.
 - The target must be `active` and the version must match.
 - On success the memory ID is unchanged and `version` increments by 1.
-- The replaced value is archived as an internal historical version, not exposed by the protocol.
+- The replaced value is archived as an internal historical version, readable through `memory-get` with a `version` argument; the archive row records the `update` action.
 
 Response data: `{"memory": <full Memory>}`.
 
 This is `update`'s own semantics; there is no nested object named `patch`.
+
+A **rollback** is an ordinary `memory-update`: first `memory-get` the target version, then `memory-update` with the old content. The version increments by 1 (append-only); no version is ever deleted by a rollback.
 
 ### 7.6 `memory-supersede`
 
@@ -438,6 +461,7 @@ Request:
   "workspace_id": 1,
   "memory_id": "mem_old",
   "expected_version": 2,
+  "reason": "migrating the database engine",
   "new": {
     "content": "Use PostgreSQL.",
     "type": "decision",
@@ -446,10 +470,11 @@ Request:
 }
 ```
 
+- `reason` is optional (rules per §4.3); it is recorded on the supersede event of the old memory.
 - The old memory must be `active` and the version must match.
 - `new` follows the Memory input rules.
 - One SQLite transaction changes the old record, creates the new record, and establishes the two-way relationship.
-- The old record becomes `superseded` with `version` incremented by 1; its replaced value is archived internally.
+- The old record becomes `superseded` with `version` incremented by 1; its replaced value is archived internally with the `supersede` action.
 - The new record is `active` with `version` 1.
 
 Response data always contains both `old` and `new`, each a full Memory object.
@@ -459,10 +484,10 @@ Response data always contains both `old` and `new`, each a full Memory object.
 Request:
 
 ```json
-{"workspace_id": 1, "memory_id": "mem_...", "expected_version": 1}
+{"workspace_id": 1, "memory_id": "mem_...", "expected_version": 1, "reason": "no longer true"}
 ```
 
-The target must be `active` and the version must match. On success the state becomes `invalid`, `version` increments by 1, and the replaced value is archived internally.
+`reason` is optional (rules per §4.3). The target must be `active` and the version must match. On success the state becomes `invalid`, `version` increments by 1, and the replaced value is archived internally with the `invalidate` action.
 
 Response data: `{"memory": <full Memory>}`.
 
@@ -476,7 +501,7 @@ Request:
 
 - Any state may be deleted, but the version must match.
 - When a supersede relationship exists, the field on the other end pointing at the deleted ID is cleared, and that other end's `version` increments by 1 and `updated_at` is updated (visible via the next `memory-get`), leaving no dangling reference.
-- All internal historical versions of this `memory_id` are deleted along with it.
+- All internal historical versions and all event rows of this `memory_id` are deleted along with it — a delete is a total erasure of that memory, including its audit trail.
 
 Response data:
 
@@ -485,6 +510,54 @@ Response data:
 ```
 
 This deletes from the current SQLite database; it does not promise secure erasure of the underlying media.
+
+### 7.9 `memory-history`
+
+Request:
+
+```json
+{"workspace_id": 1, "memory_id": "mem_..."}
+```
+
+Returns the version history of one memory, ordered by `version` ascending. Each entry is one version — the current version from `memories`, and every archived version from the internal history — carrying `version`, `action` (the operation that produced this version: `create`, `update`, `supersede`, or `invalidate`), `state` (the state of that version), `updated_at` (that version's time), and `archived_at` (when it was superseded by the next version; `null` for the current version). Entries carry no content; use `memory-get` with a `version` argument to read a full historical version.
+
+Response data:
+
+```json
+{
+  "versions": [
+    {"version": 1, "action": "create", "state": "active", "updated_at": "2026-08-21T01:02:03+08:00", "archived_at": "2026-08-21T02:00:00+08:00"},
+    {"version": 2, "action": "update", "state": "active", "updated_at": "2026-08-21T02:00:00+08:00", "archived_at": null}
+  ]
+}
+```
+
+A memory that no longer exists returns `memory_not_found` (its history was deleted with it).
+
+### 7.10 `memory-diff`
+
+Request:
+
+```json
+{"workspace_id": 1, "memory_id": "mem_...", "from_version": 1, "to_version": 2}
+```
+
+Compares two existing versions of one memory. Either version may be the current version or a historical version; they must differ. Returns only the fields that changed, each with `from` and `to`; fields not listed are identical. `content`/`type`/`scope`/`source`/`metadata`/`state` participate.
+
+Response data:
+
+```json
+{
+  "from_version": 1,
+  "to_version": 2,
+  "changes": [
+    {"field": "content", "from": "Use SQLite.", "to": "Use SQLite in WAL mode."},
+    {"field": "state", "from": "active", "to": "superseded"}
+  ]
+}
+```
+
+A version that never existed returns `memory_not_found`; `from_version` equal to `to_version` returns `invalid_request`.
 
 ## 8. Version and state conflicts
 
@@ -520,7 +593,7 @@ An error response does not also return success data. `message` must not contain 
 
 The Go request has no `approved` or `confirmed` field.
 
-The LLM may invoke read commands (`workspace-resolve`, `memory-search`, `memory-list`, `memory-get`) directly, and may propose write commands. The TS adapter must show the user the target and change and obtain Harness approval before actually starting a write command.
+The LLM may invoke read commands (`workspace-resolve`, `memory-search`, `memory-list`, `memory-get`, `memory-history`, `memory-diff`) directly, and may propose write commands. The TS adapter must show the user the target and change and obtain Harness approval before actually starting a write command.
 
 If a write invocation returns an unknown result, the adapter does not retry automatically. It should first check the current state with `workspace-resolve`, `memory-search`, `memory-list`, or `memory-get`, and then let the user decide whether to start a new write.
 
@@ -530,6 +603,6 @@ If a write invocation returns an unknown result, the adapter does not retry auto
 - Go and TS share one set of valid/invalid JSON fixtures.
 - Unknown fields, duplicate keys, trailing JSON, nulls, control characters, time formats, cursors, and version conflicts must be tested.
 - Changing an existing field's meaning, default, response shape, ordering, or error code is a protocol breaking change.
-- The protocol version tracks the application version's major component: `1.x.x` implements protocol `v1`; a breaking change becomes protocol `v2` and bumps the core and adapter application versions to `2.0.0`. The SQL schema version is an internal migration counter and does not follow the protocol or application version (see `sql-standard.md` and the README "Versioning" section).
+- The protocol version tracks the application version's major component: `2.x.x` implements protocol `v2`; the next breaking change becomes protocol `v3` and bumps the core and adapter application versions to `3.0.0`. The SQL schema version is an internal migration counter and does not follow the protocol or application version (see `sql-standard.md` and the README "Versioning" section).
 - The README documents usage only and does not repeat the full protocol.
 - Storage semantics are defined by `sql-standard.md`; where the two disagree, this document wins.

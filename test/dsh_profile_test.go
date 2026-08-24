@@ -108,7 +108,7 @@ func TestDshProfileRegisterAndRemove(t *testing.T) {
 	go func() {
 		scanner := bufio.NewScanner(stdout)
 		for scanner.Scan() {
-			if strings.Contains(scanner.Text(), "[memory-note] plugin loaded: 13 tools registered") {
+			if strings.Contains(scanner.Text(), "[memory-note] plugin loaded: 15 tools registered") {
 				loaded <- nil
 				return
 			}

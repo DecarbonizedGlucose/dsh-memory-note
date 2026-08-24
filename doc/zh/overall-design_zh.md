@@ -1,6 +1,6 @@
 # 总体设计
 
-本文档定义 `dsh-memory-note` 的总体设计。它确定运行时结构、组件职责、存储边界、并发模型和记忆生命周期。具体的 JSON 请求、响应与错误契约由 `protocol-v1-proposal_zh.md` 单独定义。
+本文档定义 `dsh-memory-note` 的总体设计。它确定运行时结构、组件职责、存储边界、并发模型和记忆生命周期。具体的 JSON 请求、响应与错误契约由 `protocol-v2-proposal_zh.md` 单独定义。
 
 本项目保持本地化和轻量。它的核心职责是：安全的一次性执行、与路径无关的工作区身份、跨进程协调、显式的记忆状态迁移、乐观版本检查，以及严格的用户审批边界。
 
@@ -175,16 +175,20 @@ SQLite 事务仍然负责记忆数据库内部的原子变更。`meta.db` 中的
 - `memory-create`、`memory-update`、`memory-invalidate` 和 `memory-delete` 各自在一个事务内完成；
 - `memory-supersede` 在一个事务内修改旧记录、创建新记录并建立两端的关联字段；
 - `workspace-clear` 在一个事务内删除所有记忆行；
-- `memory-search` 与 `memory-list` 在只读事务中运行，绝不修改数据；
+- `memory-search`、`memory-list`、`memory-get`、`memory-history` 与 `memory-diff` 在只读事务中运行，绝不修改数据；
 - 只有在事务提交之后才发出成功响应。
 
 所有 SQL 值都使用绑定参数。每个连接都启用外键约束。SQLite 的忙碌处理是有界的；它绝不能导致一次调用无限期等待。
 
 每条记忆都有一个单调递增的 `version`。修改已有记忆必须提供 `expected_version`；比较与修改发生在同一个事务中。不匹配时返回 `version_conflict`，且不改变任何数据。
 
-这是应用层上带类 MVCC 版本语义的乐观并发控制。它防止过时的 LLM 提案或并发的 Session 静默覆盖更新的事实。它并不承诺每个历史版本都可查询。
+这是应用层上带类 MVCC 版本语义的乐观并发控制。它防止过时的 LLM 提案或并发的 Session 静默覆盖更新的事实。
 
-每次成功的 `memory-update`、`memory-supersede` 或 `memory-invalidate` 都会把被替换的记录归档为内部历史版本。`memory-delete` 删除当前记录及其全部归档版本；`workspace-clear` 在一个事务内删除全部记录与全部历史。历史版本是内部审计数据，绝不通过 JSON 协议暴露。
+每次成功的 `memory-update`、`memory-supersede` 或 `memory-invalidate` 都会把被替换的记录归档为带 `action`（产生该归档的操作）的历史版本；每次 mutation 还在同一事务内写入一行轻量 `memory_events`（action、from/to version、关联 ID、reason、时间——不含正文）。历史版本可通过 `memory-get` 的 `version` 参数与 `memory-history` 读取；事件是内部审计数据，不通过任何读取命令暴露。
+
+回滚是一次普通 `memory-update`，其 content 复制事先读取的历史版本；version 递增（append-only），回滚永不删除任何版本。`memory-delete` 删除当前记录及其全部归档版本与事件；`workspace-clear` 在一个事务内删除全部记录、历史与事件。
+
+`memory_id` 与 `version` 是模型 handle：协议携带它们用于精确定位与并发检查，但适配层的用户可见面只渲染记忆内容，绝不显示这些 handle。
 
 ## 5. TypeScript 层职责
 
@@ -227,11 +231,19 @@ Go 可执行文件统一执行协议、状态、版本、事务和完整性规�
 
 ### `memory-get`
 
-按 `memory_id` 精确读取一条记忆，包括其完整内容、当前版本、来源、状态和替换关系。这是在提出版本敏感型写入之前使用的细粒度读取。
+按 `memory_id` 精确读取一条记忆，包括其完整内容、当前版本、来源、状态和替换关系。可选 `version` 参数改为读取该确切历史版本——回滚前的预览步骤。这是在提出版本敏感型写入之前使用的细粒度读取。
 
 ### `memory-list`
 
 以游标分页列出某工作区任意状态的全部记忆，按 `updated_at`、`memory_id` 排序。返回不含 content、source、metadata 的紧凑行；`memory-get` 才是读取完整记录的细粒度接口。
+
+### `memory-history`
+
+按 `version` 升序列出一条记忆的版本史：每项携带 version、产生该版本的操作、状态与时间，不含正文。配合 `memory-get` 的 `version` 参数支持追溯与回滚预览。
+
+### `memory-diff`
+
+比较同一记忆的两个已存在版本，只返回发生变化的字段，每项带 `from` 与 `to`。
 
 ### `memory-create`
 
@@ -306,9 +318,9 @@ Go 可执行文件统一执行协议、状态、版本、事务和完整性规�
 
 ## 10. 版本与兼容性
 
-对外只有一个版本：**应用版本（application version）**（当前 `1.0.0`），由 Go 核心与 TypeScript 适配层 bundle 共用。单一来源是 `internal/version`；`version` 子命令输出它，适配层在 `package.json` 中镜像它。发布构建可用 `-ldflags "-X .../internal/version.Version=X.Y.Z"` 覆盖。
+对外只有一个版本：**应用版本（application version）**（当前 `2.0.0`），由 Go 核心与 TypeScript 适配层 bundle 共用。单一来源是 `internal/version`；`version` 子命令输出它，适配层在 `package.json` 中镜像它。发布构建可用 `-ldflags "-X .../internal/version.Version=X.Y.Z"` 覆盖。
 
-- **协议版本跟随主版本。** `1.x.x` 实现协议 `v1`；协议发生 breaking change（协议 §11）时升为协议 `v2`，应用版本同步升到 `2.0.0`。核心与适配层必须同主版本、同协议。
+- **协议版本跟随主版本。** `2.x.x` 实现协议 `v2`（本分支）；`1.x.x` 实现协议 `v1`。协议发生 breaking change（协议 §11）时升为协议 `v3`，应用版本同步升到 `3.0.0`。核心与适配层必须同主版本、同协议。
 - **SQL schema 版本是内部迁移计数器，绝不跟随发布。** 只在表结构变化时递增；打开数据库时强校验，不匹配则返回 `schema_mismatch` fail-closed，绝不静默迁移或重建数据。因此任何 `1.0.x` 的 bugfix 发布都不会让已有数据库失效。
 
 版本号只是标签；兼容性来自真正被验证的机制：Go/TS 共享 request fixtures 保证核心/适配层契约一致，`schema_version` 校验守住数据库，一切不匹配都以 fail-closed 拒绝而非静默修复。

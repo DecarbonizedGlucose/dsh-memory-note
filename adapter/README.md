@@ -13,16 +13,17 @@ writes, and passes the core response back to the model.
 
 ## Tools
 
-The bundle registers 13 tools:
+The bundle registers 15 tools:
 
 - Workspace: `workspace_resolve`, `workspace_register`, `workspace_rebind`,
   `workspace_clear`, `workspace_delete`
-- Memory: `memory_search`, `memory_list`, `memory_get`, `memory_create`,
-  `memory_update`, `memory_supersede`, `memory_invalidate`, `memory_delete`
+- Memory: `memory_search`, `memory_list`, `memory_get`, `memory_history`,
+  `memory_diff`, `memory_create`, `memory_update`, `memory_supersede`,
+  `memory_invalidate`, `memory_delete`
 
 `version` and `help` belong to the Go executable and are not Harness tools.
 The request and response contract is defined in
-[`../doc/en/protocol-v1-proposal.md`](../doc/en/protocol-v1-proposal.md).
+[`../doc/en/protocol-v2-proposal.md`](../doc/en/protocol-v2-proposal.md).
 
 ## Configuration
 
@@ -56,6 +57,8 @@ set, the adapter exports it as `DSH_MEMORY_NOTE_HOME` for the child process.
 User-facing cards avoid raw protocol fields. Model output keeps `memory_id` and
 `version` unchanged when they are needed for a later write; other displayable
 values, including states and dates, are rendered in natural language.
+`memory_history` gives the model version numbers as handles for precise
+rollback reads, but user cards show only counts and content, never versions.
 
 ## Install
 
