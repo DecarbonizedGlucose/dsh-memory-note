@@ -59,6 +59,10 @@ func decodeFixture(command, raw string) error {
 		return Decode(raw, &MemoryListRequest{})
 	case "memory-get":
 		return Decode(raw, &MemoryGetRequest{})
+	case "memory-history":
+		return Decode(raw, &MemoryHistoryRequest{})
+	case "memory-diff":
+		return Decode(raw, &MemoryDiffRequest{})
 	case "memory-create":
 		return Decode(raw, &MemoryCreateRequest{})
 	case "memory-update":
@@ -76,7 +80,7 @@ func decodeFixture(command, raw string) error {
 
 func readFixtures(t *testing.T, kind string, target any) {
 	t.Helper()
-	path := filepath.Join("..", "..", "protocol", "v1", "fixtures", kind, "requests.json")
+	path := filepath.Join("..", "..", "protocol", "v2", "fixtures", kind, "requests.json")
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
