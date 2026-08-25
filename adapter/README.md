@@ -45,6 +45,9 @@ set, the adapter exports it as `DSH_MEMORY_NOTE_HOME` for the child process.
 
 - Read tools run directly. Every write tool asks for Harness approval before
   the core process starts; only an `allowed-once` decision proceeds.
+- Before the first tool call, the adapter checks that the core and adapter use
+  the same protocol major version. A mismatch reports which core was found and
+  asks the user to reinstall it instead of forwarding an incompatible request.
 - Tool callers may omit `workspace_id`. The adapter resolves the agent
   session's current working directory with `workspace-resolve` and supplies
   the resulting ID. An unregistered directory produces an error that points to

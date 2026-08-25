@@ -9,7 +9,8 @@
 import type { Context } from "@deepseek-ai/cordis";
 import { defineTool, type ToolExecution } from "@deepseek-ai/dsh-tools";
 import type { ApprovalOutcome } from "@deepseek-ai/dsh-user-approval";
-import { CoreError, CoreErrorCode, runCore, type CoreOptions, type JsonValue } from "./core.js";
+import { checkCoreVersion, CoreError, CoreErrorCode, runCore, type CoreOptions, type JsonValue } from "./core.js";
+import { protocolMajor } from "./version.js";
 
 export interface MemoryNoteConfig {
   binaryPath: string;
@@ -506,7 +507,21 @@ function cardKind(subcommand: string): "read" | "search" | undefined {
   return undefined;
 }
 
-export function registerMemoryNoteTools(ctx: Context, config: MemoryNoteConfig): void {  for (const subcommand of Object.keys(parameterSpecs)) {
+export function registerMemoryNoteTools(ctx: Context, config: MemoryNoteConfig): void {
+  let coreCheck: Promise<string> | undefined;
+  const ensureCore = async (): Promise<void> => {
+    coreCheck ??= checkCoreVersion(coreOptions(config), protocolMajor);
+    try {
+      await coreCheck;
+    } catch (err) {
+      // Allow recovery after the core is reinstalled without restarting a
+      // long-running profile. Successful checks stay cached.
+      coreCheck = undefined;
+      throw err;
+    }
+  };
+
+  for (const subcommand of Object.keys(parameterSpecs)) {
     const spec = TOOL_NAMES[subcommand];
     const parameters = parameterSpecs[subcommand];
     const needsWorkspaceId = "workspace_id" in parameters;
@@ -532,6 +547,11 @@ export function registerMemoryNoteTools(ctx: Context, config: MemoryNoteConfig):
             : undefined;
         },
         async execute(args, exec) {
+          try {
+            await ensureCore();
+          } catch (err) {
+            throw friendlyError(err);
+          }
           const request: Record<string, unknown> = { ...(args as Record<string, unknown>) };
           if (defaultsPath && request.path === undefined) {
             const cwd = agentCwd(exec);

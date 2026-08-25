@@ -8,10 +8,41 @@ import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { CoreError, CoreErrorCode, runCore } from "../src/core.js";
+import { checkCoreVersion, CoreError, CoreErrorCode, runCore } from "../src/core.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const fakeScript = path.join(here, "fixtures", "fake-binary.mjs");
+
+test("core version check accepts the adapter protocol major", async () => {
+  const version = await checkCoreVersion(
+    { binaryPath: fakeScript, timeoutMs: 2000, env: { FAKE_VERSION: "2.3.4" } },
+    2,
+  );
+  assert.equal(version, "2.3.4");
+});
+
+test("core version check rejects a different protocol major with guidance", async () => {
+  await assert.rejects(
+    checkCoreVersion(
+      { binaryPath: fakeScript, timeoutMs: 2000, env: { FAKE_VERSION: "1.0.0" } },
+      2,
+    ),
+    (err: unknown) =>
+      err instanceof CoreError &&
+      err.code === CoreErrorCode.VersionMismatch &&
+      /core version 1\.0\.0.*requires protocol v2.*reinstall/.test(err.message),
+  );
+});
+
+test("core version check rejects malformed output", async () => {
+  await assert.rejects(
+    checkCoreVersion(
+      { binaryPath: fakeScript, timeoutMs: 2000, env: { FAKE_VERSION: "development" } },
+      2,
+    ),
+    (err: unknown) => err instanceof CoreError && err.code === CoreErrorCode.UnknownResult,
+  );
+});
 
 test("success resolves data and passes the JSON as a single argv", async () => {
   const echoFile = path.join(mkdtempSync(path.join(os.tmpdir(), "dsh-ts-")), "argv.json");

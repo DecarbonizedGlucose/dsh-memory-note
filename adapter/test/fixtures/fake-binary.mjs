@@ -14,6 +14,11 @@ try {
   // invalid JSON: scripted mode only cares about well-formed calls
 }
 
+if (subcommand === "version") {
+  writeFileSync(1, `${process.env.FAKE_VERSION ?? "2.0.0"}\n`);
+  process.exit(0);
+}
+
 if (process.env.FAKE_ECHO_FILE) {
   writeFileSync(process.env.FAKE_ECHO_FILE, JSON.stringify(args));
 }
@@ -22,11 +27,11 @@ if (process.env.FAKE_LOG) {
 }
 
 function respond(data) {
-  process.stdout.write(JSON.stringify({ ok: true, data }));
+  writeFileSync(1, JSON.stringify({ ok: true, data }));
   process.exit(0);
 }
 function fail(code, message) {
-  process.stdout.write(JSON.stringify({ ok: false, error: { code, message } }));
+  writeFileSync(1, JSON.stringify({ ok: false, error: { code, message } }));
   process.exit(1);
 }
 

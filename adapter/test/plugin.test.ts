@@ -41,6 +41,7 @@ interface FakeApproval {
 function makeContext(
   mode = "scripted",
   outcome = "allowed-once",
+  version = "2.0.0",
 ): {
   ctx: Context;
   approval: FakeApproval;
@@ -70,6 +71,7 @@ function makeContext(
       FAKE_MODE: mode,
       FAKE_WS_PATH: workspacePath,
       FAKE_LOG: logFile,
+      FAKE_VERSION: version,
     },
   } satisfies MemoryNoteConfig);
   const calls = () => {
@@ -167,6 +169,18 @@ test("read tools run without asking approval", async () => {
   const value = await search.execute({ query: "sqlite" }, fakeExec(workspacePath));
   assert.deepEqual(value, { memories: [] });
   assert.equal(approval.asked.length, 0);
+});
+
+test("a v1 core is rejected before any business command", async () => {
+  const { approval, tools, calls } = makeContext("scripted", "allowed-once", "1.0.0");
+  const create = tools.find((tool) => tool.name === "memory_create");
+  assert.ok(create);
+  await assert.rejects(
+    create.execute({ content: "Use SQLite.", kind: "fact" }, fakeExec(workspacePath)),
+    /core version 1\.0\.0.*requires protocol v2.*reinstall/,
+  );
+  assert.equal(approval.asked.length, 0);
+  assert.deepEqual(calls(), []);
 });
 
 test("write tools ask approval once and pass the resolved workspace_id", async () => {
