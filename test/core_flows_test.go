@@ -17,7 +17,7 @@ func TestWorkspaceRebind(t *testing.T) {
 	other := t.TempDir()
 
 	mustRun(t, binary, home, "workspace-register", map[string]any{"path": first})
-	created := mustRun(t, binary, home, "memory-create", map[string]any{"workspace_id": 1, "content": "stays put"})
+	created := mustRun(t, binary, home, "memory-create", map[string]any{"workspace_id": 1, "content": "stays put", "kind": "note"})
 	id := created.Data["memory"].(map[string]any)["memory_id"].(string)
 
 	// Rebind to a new path.
@@ -69,7 +69,7 @@ func TestWorkspaceClearThenRead(t *testing.T) {
 	ids := make([]string, 3)
 	for i := 0; i < 3; i++ {
 		created := mustRun(t, binary, home, "memory-create", map[string]any{
-			"workspace_id": 1, "content": fmt.Sprintf("memory %d", i),
+			"workspace_id": 1, "content": fmt.Sprintf("memory %d", i), "kind": "note",
 		})
 		ids[i] = created.Data["memory"].(map[string]any)["memory_id"].(string)
 	}
@@ -101,7 +101,7 @@ func TestMemoryStateAndVersionErrors(t *testing.T) {
 	workspace := t.TempDir()
 	mustRun(t, binary, home, "workspace-register", map[string]any{"path": workspace})
 
-	created := mustRun(t, binary, home, "memory-create", map[string]any{"workspace_id": 1, "content": "target"})
+	created := mustRun(t, binary, home, "memory-create", map[string]any{"workspace_id": 1, "content": "target", "kind": "note"})
 	id := created.Data["memory"].(map[string]any)["memory_id"].(string)
 
 	// Version check comes first.
@@ -119,7 +119,7 @@ func TestMemoryStateAndVersionErrors(t *testing.T) {
 	}, "invalid_memory_state")
 	wantCoreError(t, binary, home, "memory-supersede", map[string]any{
 		"workspace_id": 1, "memory_id": id, "expected_version": 2,
-		"new": map[string]any{"content": "replacement"},
+		"new": map[string]any{"content": "replacement", "kind": "note"},
 	}, "invalid_memory_state")
 
 	// Delete checks version, not state.
@@ -131,7 +131,7 @@ func TestMemoryStateAndVersionErrors(t *testing.T) {
 	})
 }
 
-// TestMemorySearchFilters pins filter semantics: exact type/scope matches,
+// TestMemorySearchFilters pins filter semantics: exact kind/label matches,
 // OR within a dimension, AND across dimensions, filter-only score 0, empty
 // array rejection, and time-boundary validation.
 func TestMemorySearchFilters(t *testing.T) {
@@ -142,15 +142,15 @@ func TestMemorySearchFilters(t *testing.T) {
 
 	for _, entry := range []struct {
 		content string
-		typ     string
-		scope   string
+		kind    string
+		label   string
 	}{
-		{"alpha one", "num", "a"},
-		{"beta two", "num", "b"},
-		{"gamma three", "word", "a"},
+		{"alpha one", "fact", "a"},
+		{"beta two", "fact", "b"},
+		{"gamma three", "note", "a"},
 	} {
 		mustRun(t, binary, home, "memory-create", map[string]any{
-			"workspace_id": 1, "content": entry.content, "type": entry.typ, "scope": entry.scope,
+			"workspace_id": 1, "content": entry.content, "kind": entry.kind, "label": entry.label,
 		})
 	}
 
@@ -159,30 +159,30 @@ func TestMemorySearchFilters(t *testing.T) {
 		t.Fatalf("query search = %#v", byQuery)
 	}
 
-	byType := mustRun(t, binary, home, "memory-search", map[string]any{
-		"workspace_id": 1, "filter": map[string]any{"types": []string{"num"}},
+	byKind := mustRun(t, binary, home, "memory-search", map[string]any{
+		"workspace_id": 1, "filter": map[string]any{"kinds": []string{"fact"}},
 	})
-	hits := byType.Data["memories"].([]any)
+	hits := byKind.Data["memories"].([]any)
 	if len(hits) != 2 || hits[0].(map[string]any)["score"] != float64(0) {
-		t.Fatalf("type-filter search (score must be 0) = %#v", byType)
+		t.Fatalf("kind-filter search (score must be 0) = %#v", byKind)
 	}
 
-	byScope := mustRun(t, binary, home, "memory-search", map[string]any{
-		"workspace_id": 1, "filter": map[string]any{"scopes": []string{"a"}},
+	byLabel := mustRun(t, binary, home, "memory-search", map[string]any{
+		"workspace_id": 1, "filter": map[string]any{"labels": []string{"a"}},
 	})
-	if memories := byScope.Data["memories"].([]any); len(memories) != 2 {
-		t.Fatalf("scope-filter search = %#v", byScope)
+	if memories := byLabel.Data["memories"].([]any); len(memories) != 2 {
+		t.Fatalf("label-filter search = %#v", byLabel)
 	}
 
 	combined := mustRun(t, binary, home, "memory-search", map[string]any{
-		"workspace_id": 1, "query": "beta", "filter": map[string]any{"types": []string{"num"}},
+		"workspace_id": 1, "query": "beta", "filter": map[string]any{"kinds": []string{"fact"}},
 	})
 	if memories := combined.Data["memories"].([]any); len(memories) != 1 {
 		t.Fatalf("query+filter search = %#v", combined)
 	}
 
 	wantCoreError(t, binary, home, "memory-search", map[string]any{
-		"workspace_id": 1, "filter": map[string]any{"types": []string{}},
+		"workspace_id": 1, "filter": map[string]any{"kinds": []string{}},
 	}, "invalid_request")
 	wantCoreError(t, binary, home, "memory-search", map[string]any{
 		"workspace_id": 1,
@@ -201,7 +201,7 @@ func TestMemoryListPagination(t *testing.T) {
 
 	for i := 0; i < 5; i++ {
 		mustRun(t, binary, home, "memory-create", map[string]any{
-			"workspace_id": 1, "content": fmt.Sprintf("page memory %d", i),
+			"workspace_id": 1, "content": fmt.Sprintf("page memory %d", i), "kind": "note",
 		})
 	}
 

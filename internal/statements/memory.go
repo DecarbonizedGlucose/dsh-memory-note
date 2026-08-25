@@ -6,17 +6,17 @@ const (
 	CreateMemoryInfo = `CREATE TABLE memory_info (
 		id INTEGER PRIMARY KEY CHECK(id = 1),
 		workspace_id INTEGER NOT NULL CHECK(workspace_id BETWEEN 1 AND 9007199254740991),
-		schema_version INTEGER NOT NULL CHECK(schema_version = 3)
+		schema_version INTEGER NOT NULL CHECK(schema_version = 4)
 	)`
-	InsertMemoryInfo = `INSERT INTO memory_info(id, workspace_id, schema_version) VALUES(1, ?, 3)`
+	InsertMemoryInfo = `INSERT INTO memory_info(id, workspace_id, schema_version) VALUES(1, ?, 4)`
 	ReadMemoryInfo   = `SELECT workspace_id, schema_version FROM memory_info WHERE id = 1`
 
 	CreateMemories = `CREATE TABLE memories (
 		workspace_id INTEGER NOT NULL CHECK(workspace_id BETWEEN 1 AND 9007199254740991),
 		memory_id TEXT NOT NULL,
 		content TEXT NOT NULL,
-		type TEXT,
-		scope TEXT,
+		kind TEXT NOT NULL CHECK(kind IN ('fact', 'note')),
+		label TEXT,
 		source_json TEXT NOT NULL,
 		metadata_json TEXT NOT NULL,
 		state TEXT NOT NULL CHECK(state IN ('active', 'superseded', 'invalid')),
@@ -38,8 +38,8 @@ const (
 		version INTEGER NOT NULL,
 		action TEXT NOT NULL,
 		content TEXT NOT NULL,
-		type TEXT,
-		scope TEXT,
+		kind TEXT NOT NULL CHECK(kind IN ('fact', 'note')),
+		label TEXT,
 		source_json TEXT NOT NULL,
 		metadata_json TEXT NOT NULL,
 		state TEXT NOT NULL,
@@ -67,10 +67,10 @@ const (
 	)`
 	CreateMemoryEventsIndex = `CREATE INDEX memory_events_by_memory ON memory_events(workspace_id, memory_id, id)`
 
-	CreateMemoriesSearch = `CREATE INDEX memories_search ON memories(state, type, scope, updated_at, memory_id)`
+	CreateMemoriesSearch = `CREATE INDEX memories_search ON memories(state, kind, label, updated_at, memory_id)`
 	CreateMemoriesList   = `CREATE INDEX memories_list ON memories(workspace_id, updated_at, memory_id)`
 
-	SelectMemoryColumns = `SELECT memory_id, workspace_id, content, type, scope, source_json, metadata_json,
+	SelectMemoryColumns = `SELECT memory_id, workspace_id, content, kind, label, source_json, metadata_json,
 		state, version, supersedes, superseded_by, created_at, created_offset, updated_at, updated_offset FROM memories`
 	SelectMemoryByID = SelectMemoryColumns + ` WHERE workspace_id = ? AND memory_id = ?`
 	SelectActive     = SelectMemoryColumns + ` WHERE workspace_id = ? AND state = 'active'`
@@ -78,16 +78,16 @@ const (
 	SelectNextPage   = SelectMemoryColumns + ` WHERE workspace_id = ? AND (updated_at < ? OR (updated_at = ? AND memory_id > ?))
 		ORDER BY updated_at DESC, memory_id ASC LIMIT ?`
 
-	InsertMemory = `INSERT INTO memories(memory_id, workspace_id, content, type, scope, source_json,
+	InsertMemory = `INSERT INTO memories(memory_id, workspace_id, content, kind, label, source_json,
 		metadata_json, state, version, supersedes, superseded_by, created_at, created_offset, updated_at, updated_offset)
 		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
-	InsertHistory = `INSERT INTO memory_history(workspace_id, memory_id, version, action, content, type, scope,
+	InsertHistory = `INSERT INTO memory_history(workspace_id, memory_id, version, action, content, kind, label,
 		source_json, metadata_json, state, supersedes, superseded_by, created_at, created_offset,
 		updated_at, updated_offset, archived_at)
 		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
-	SelectHistoryColumns = `SELECT memory_id, workspace_id, content, type, scope, source_json, metadata_json,
+	SelectHistoryColumns = `SELECT memory_id, workspace_id, content, kind, label, source_json, metadata_json,
 		state, version, supersedes, superseded_by, created_at, created_offset, updated_at, updated_offset FROM memory_history`
 	SelectHistoryVersion = SelectHistoryColumns + ` WHERE workspace_id = ? AND memory_id = ? AND version = ?`
 
@@ -104,7 +104,7 @@ const (
 	DeleteMemoryEvents = `DELETE FROM memory_events WHERE workspace_id = ? AND memory_id = ?`
 	ClearMemoryEvents  = `DELETE FROM memory_events WHERE workspace_id = ?`
 
-	UpdateMemory = `UPDATE memories SET content = ?, type = ?, scope = ?, source_json = ?, metadata_json = ?,
+	UpdateMemory = `UPDATE memories SET content = ?, kind = ?, label = ?, source_json = ?, metadata_json = ?,
 		state = ?, version = ?, supersedes = ?, superseded_by = ?, updated_at = ?, updated_offset = ?
 		WHERE workspace_id = ? AND memory_id = ? AND version = ?`
 

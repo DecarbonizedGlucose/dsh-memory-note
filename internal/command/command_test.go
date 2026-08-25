@@ -45,13 +45,13 @@ func TestWorkspaceAndMemoryLifecycle(t *testing.T) {
 	created := wantData[protocol.MemoryCreateData](t, call(t, ctx, storeRoot, "memory-create", map[string]any{
 		"workspace_id": wid,
 		"content":      "Use SQLite for local storage.",
-		"type":         " decision ",
-		"scope":        "storage",
+		"kind":         " fact ",
+		"label":        "storage",
 		"source":       []string{" chat:1 ", "chat:1", ""},
 		"metadata":     map[string]any{"reason": "local", "optional": nil},
 	}))
 	item := created.Memory
-	if item.State != protocol.MemoryActive || item.Version != 1 || item.Type == nil || *item.Type != "decision" || len(item.Source) != 1 {
+	if item.State != protocol.MemoryActive || item.Version != 1 || item.Kind != "fact" || len(item.Source) != 1 {
 		t.Fatalf("created memory = %#v", item)
 	}
 
@@ -63,7 +63,7 @@ func TestWorkspaceAndMemoryLifecycle(t *testing.T) {
 	}
 
 	search := wantData[protocol.MemorySearchData](t, call(t, ctx, storeRoot, "memory-search", map[string]any{
-		"workspace_id": wid, "query": "sqlite missing", "filter": map[string]any{"types": []string{"decision"}},
+		"workspace_id": wid, "query": "sqlite missing", "filter": map[string]any{"kinds": []string{"fact"}},
 	}))
 	if len(search.Memories) != 1 || search.Memories[0].Score != 0.5 {
 		t.Fatalf("search data = %#v", search)
@@ -71,36 +71,36 @@ func TestWorkspaceAndMemoryLifecycle(t *testing.T) {
 
 	// Filter-only search has score 0, and ASCII case folding matches.
 	filterOnly := wantData[protocol.MemorySearchData](t, call(t, ctx, storeRoot, "memory-search", map[string]any{
-		"workspace_id": wid, "query": "SQLITE", "filter": map[string]any{"scopes": []string{"storage"}},
+		"workspace_id": wid, "query": "SQLITE", "filter": map[string]any{"labels": []string{"storage"}},
 	}))
 	if len(filterOnly.Memories) != 1 || filterOnly.Memories[0].Score != 1 {
 		t.Fatalf("filter-only search data = %#v", filterOnly)
 	}
 	scored := wantData[protocol.MemorySearchData](t, call(t, ctx, storeRoot, "memory-search", map[string]any{
-		"workspace_id": wid, "filter": map[string]any{"scopes": []string{"storage"}},
+		"workspace_id": wid, "filter": map[string]any{"labels": []string{"storage"}},
 	}))
 	if len(scored.Memories) != 1 || scored.Memories[0].Score != 0 {
 		t.Fatalf("filter-only score = %#v", scored)
 	}
 	wantError(t, call(t, ctx, storeRoot, "memory-search", map[string]any{
-		"workspace_id": wid, "filter": map[string]any{"types": []string{}},
+		"workspace_id": wid, "filter": map[string]any{"kinds": []string{}},
 	}), protocol.CodeInvalidRequest)
 
 	updated := wantData[protocol.MemoryUpdateData](t, call(t, ctx, storeRoot, "memory-update", map[string]any{
 		"workspace_id": wid, "memory_id": item.ID, "expected_version": 1,
-		"content": "Use SQLite in WAL mode.", "type": "", "source": []string{}, "metadata": map[string]any{},
+		"content": "Use SQLite in WAL mode.", "label": "", "source": []string{}, "metadata": map[string]any{},
 	}))
 	item = updated.Memory
-	if item.Version != 2 || item.Type != nil || len(item.Source) != 0 || len(item.Metadata) != 0 {
+	if item.Version != 2 || item.Label != nil || len(item.Source) != 0 || len(item.Metadata) != 0 {
 		t.Fatalf("updated memory = %#v", item)
 	}
 	wantError(t, call(t, ctx, storeRoot, "memory-update", map[string]any{
-		"workspace_id": wid, "memory_id": item.ID, "expected_version": 1, "scope": "other",
+		"workspace_id": wid, "memory_id": item.ID, "expected_version": 1, "label": "other",
 	}), protocol.CodeVersionConflict)
 
 	superseded := wantData[protocol.MemorySupersedeData](t, call(t, ctx, storeRoot, "memory-supersede", map[string]any{
 		"workspace_id": wid, "memory_id": item.ID, "expected_version": 2,
-		"new": map[string]any{"content": "Use PostgreSQL for shared storage.", "type": "decision"},
+		"new": map[string]any{"content": "Use PostgreSQL for shared storage.", "kind": "fact"},
 	}))
 	if superseded.Old.State != protocol.MemorySuperseded || superseded.Old.Version != 3 ||
 		superseded.New.Supersedes == nil || *superseded.New.Supersedes != item.ID {
@@ -169,7 +169,7 @@ func TestMemoryListPagination(t *testing.T) {
 		call(t, ctx, storeRoot, "workspace-register", map[string]any{"path": project})).Workspace.ID
 	for index := 0; index < 3; index++ {
 		wantData[protocol.MemoryCreateData](t, call(t, ctx, storeRoot, "memory-create", map[string]any{
-			"workspace_id": wid, "content": "memory number", "scope": string(rune('a' + index)),
+			"workspace_id": wid, "content": "memory number", "kind": "note", "label": string(rune('a' + index)),
 		}))
 	}
 	first := wantData[protocol.MemoryListData](t, call(t, ctx, storeRoot, "memory-list", map[string]any{
@@ -197,7 +197,7 @@ func TestMemoryHistoryAndRollback(t *testing.T) {
 		call(t, ctx, storeRoot, "workspace-register", map[string]any{"path": project})).Workspace.ID
 
 	created := wantData[protocol.MemoryCreateData](t, call(t, ctx, storeRoot, "memory-create", map[string]any{
-		"workspace_id": wid, "content": "Use SQLite.", "reason": "initial choice",
+		"workspace_id": wid, "content": "Use SQLite.", "kind": "note", "reason": "initial choice",
 	})).Memory
 	first := created.ID
 
@@ -270,11 +270,11 @@ func TestMemoryDiff(t *testing.T) {
 	wid := wantData[protocol.WorkspaceRegisterData](t,
 		call(t, ctx, storeRoot, "workspace-register", map[string]any{"path": project})).Workspace.ID
 	created := wantData[protocol.MemoryCreateData](t, call(t, ctx, storeRoot, "memory-create", map[string]any{
-		"workspace_id": wid, "content": "Use SQLite.",
+		"workspace_id": wid, "content": "Use SQLite.", "kind": "note",
 	})).Memory
 	wantData[protocol.MemoryUpdateData](t, call(t, ctx, storeRoot, "memory-update", map[string]any{
 		"workspace_id": wid, "memory_id": created.ID, "expected_version": 1,
-		"content": "Use SQLite in WAL mode.", "type": "decision",
+		"content": "Use SQLite in WAL mode.", "kind": "fact",
 	}))
 
 	diff := wantData[protocol.MemoryDiffData](t, call(t, ctx, storeRoot, "memory-diff", map[string]any{
@@ -284,7 +284,7 @@ func TestMemoryDiff(t *testing.T) {
 	for _, change := range diff.Changes {
 		fields[change.Field] = true
 	}
-	if !fields["content"] || !fields["type"] {
+	if !fields["content"] || !fields["kind"] {
 		t.Fatalf("changes = %#v", diff.Changes)
 	}
 	if len(diff.Changes) != 2 {
@@ -306,7 +306,7 @@ func TestDeleteErasesHistory(t *testing.T) {
 	wid := wantData[protocol.WorkspaceRegisterData](t,
 		call(t, ctx, storeRoot, "workspace-register", map[string]any{"path": project})).Workspace.ID
 	created := wantData[protocol.MemoryCreateData](t, call(t, ctx, storeRoot, "memory-create", map[string]any{
-		"workspace_id": wid, "content": "Use SQLite.",
+		"workspace_id": wid, "content": "Use SQLite.", "kind": "note",
 	})).Memory
 	wantData[protocol.MemoryUpdateData](t, call(t, ctx, storeRoot, "memory-update", map[string]any{
 		"workspace_id": wid, "memory_id": created.ID, "expected_version": 1, "content": "v2",
@@ -404,7 +404,7 @@ func TestWorkspaceLockReturnsBusy(t *testing.T) {
 	defer store.Unlock(ctx, wid, "test-session")
 
 	wantError(t, call(t, ctx, storeRoot, "memory-create", map[string]any{
-		"workspace_id": wid, "content": "blocked",
+		"workspace_id": wid, "content": "blocked", "kind": "note",
 	}), protocol.CodeWorkspaceBusy)
 }
 

@@ -22,7 +22,7 @@ func memorySearch(ctx context.Context, storeRoot, sessionID, raw string) (protoc
 	if err := protocol.Decode(raw, &request); err != nil {
 		return protocol.MemorySearchData{}, err
 	}
-	terms, types, scopes, limit, err := checkSearch(request)
+	terms, kinds, labels, limit, err := checkSearch(request)
 	if err != nil {
 		return protocol.MemorySearchData{}, err
 	}
@@ -52,7 +52,7 @@ func memorySearch(ctx context.Context, storeRoot, sessionID, raw string) (protoc
 
 	hits := make([]protocol.SearchHit, 0)
 	for _, item := range memories {
-		if !matchesFilter(item, request.Filter, types, scopes) {
+		if !matchesFilter(item, request.Filter, kinds, labels) {
 			continue
 		}
 		score, matched := matchTerms(item, terms)
@@ -60,7 +60,7 @@ func memorySearch(ctx context.Context, storeRoot, sessionID, raw string) (protoc
 			continue
 		}
 		hits = append(hits, protocol.SearchHit{
-			ID: item.ID, Type: item.Type, Scope: item.Scope, Version: item.Version,
+			ID: item.ID, Kind: item.Kind, Label: item.Label, Version: item.Version,
 			Snippet: snippet(item.Content), Score: score, UpdatedAt: item.UpdatedAt,
 		})
 	}
@@ -153,7 +153,7 @@ func memoryList(ctx context.Context, storeRoot, sessionID, raw string) (protocol
 	}
 	for _, item := range rows {
 		data.Memories = append(data.Memories, protocol.ListItem{
-			ID: item.ID, Type: item.Type, Scope: item.Scope, State: item.State, Version: item.Version,
+			ID: item.ID, Kind: item.Kind, Label: item.Label, State: item.State, Version: item.Version,
 			Supersedes: item.Supersedes, SupersededBy: item.SupersededBy,
 			CreatedAt: item.CreatedAt, UpdatedAt: item.UpdatedAt,
 		})
@@ -388,7 +388,7 @@ func memoryUpdate(ctx context.Context, storeRoot, sessionID, raw string) (protoc
 	if err := checkTarget(request.WorkspaceID, request.MemoryID, request.ExpectedVersion); err != nil {
 		return protocol.MemoryUpdateData{}, err
 	}
-	if request.Content == nil && request.Type == nil && request.Scope == nil && request.Source == nil && request.Metadata == nil {
+	if request.Content == nil && request.Kind == nil && request.Label == nil && request.Source == nil && request.Metadata == nil {
 		return protocol.MemoryUpdateData{}, protocol.Invalid("at least one memory field is required")
 	}
 	if err := cleanUpdate(&request); err != nil {
@@ -609,7 +609,7 @@ func newMemory(workspaceID int64, input protocol.MemoryInput, supersedes *string
 	}
 	created := now()
 	return protocol.Memory{
-		ID: id, WorkspaceID: workspaceID, Content: input.Content, Type: input.Type, Scope: input.Scope,
+		ID: id, WorkspaceID: workspaceID, Content: input.Content, Kind: input.Kind, Label: input.Label,
 		Source: input.Source, Metadata: input.Metadata, State: protocol.MemoryActive, Version: 1,
 		Supersedes: supersedes, CreatedAt: created, UpdatedAt: created,
 	}, nil
@@ -651,21 +651,21 @@ func checkWritable(item protocol.Memory, expectedVersion int64) error {
 
 func cleanUpdate(request *protocol.MemoryUpdateRequest) error {
 	if request.Content != nil {
-		cleaned, err := cleanInput(protocol.MemoryInput{Content: *request.Content})
-		if err != nil {
-			return err
+		if !utf8.ValidString(*request.Content) || strings.TrimSpace(*request.Content) == "" ||
+			strings.ContainsRune(*request.Content, 0) || len(*request.Content) > 64*1024 {
+			return protocol.Invalid("content is invalid")
 		}
-		request.Content = &cleaned.Content
 	}
 	var err error
-	if request.Type != nil {
-		_, err = cleanLabel(request.Type, 128, "type")
-		if err != nil {
-			return err
+	if request.Kind != nil {
+		if !protocol.ValidMemoryKind(strings.TrimSpace(*request.Kind)) {
+			return protocol.Invalid("kind must be fact or note")
 		}
+		trimmed := strings.TrimSpace(*request.Kind)
+		request.Kind = &trimmed
 	}
-	if request.Scope != nil {
-		_, err = cleanLabel(request.Scope, 256, "scope")
+	if request.Label != nil {
+		_, err = cleanLabel(request.Label, 256, "label")
 		if err != nil {
 			return err
 		}
@@ -690,11 +690,11 @@ func applyUpdate(item *protocol.Memory, request protocol.MemoryUpdateRequest) {
 	if request.Content != nil {
 		item.Content = *request.Content
 	}
-	if request.Type != nil {
-		item.Type, _ = cleanLabel(request.Type, 128, "type")
+	if request.Kind != nil {
+		item.Kind = *request.Kind
 	}
-	if request.Scope != nil {
-		item.Scope, _ = cleanLabel(request.Scope, 256, "scope")
+	if request.Label != nil {
+		item.Label, _ = cleanLabel(request.Label, 256, "label")
 	}
 	if request.Source != nil {
 		item.Source = *request.Source
@@ -709,25 +709,25 @@ func checkSearch(request protocol.MemorySearchRequest) ([]string, []string, []st
 		return nil, nil, nil, 0, err
 	}
 	terms := words(request.Query)
-	types, scopes := []string(nil), []string(nil)
+	kinds, labels := []string(nil), []string(nil)
 	if request.Filter != nil {
-		if request.Filter.Types != nil {
-			types = cleanLabels(request.Filter.Types)
-			if len(types) == 0 {
-				return nil, nil, nil, 0, protocol.Invalid("filter types must not be empty")
+		if request.Filter.Kinds != nil {
+			kinds = cleanLabels(request.Filter.Kinds)
+			if len(kinds) == 0 {
+				return nil, nil, nil, 0, protocol.Invalid("filter kinds must not be empty")
 			}
 		}
-		if request.Filter.Scopes != nil {
-			scopes = cleanLabels(request.Filter.Scopes)
-			if len(scopes) == 0 {
-				return nil, nil, nil, 0, protocol.Invalid("filter scopes must not be empty")
+		if request.Filter.Labels != nil {
+			labels = cleanLabels(request.Filter.Labels)
+			if len(labels) == 0 {
+				return nil, nil, nil, 0, protocol.Invalid("filter labels must not be empty")
 			}
 		}
 		if invalidRange(request.Filter.CreatedAfter, request.Filter.CreatedBefore) || invalidRange(request.Filter.UpdatedAfter, request.Filter.UpdatedBefore) {
 			return nil, nil, nil, 0, protocol.Invalid("search time range is invalid")
 		}
 	}
-	if len(terms) == 0 && len(types) == 0 && len(scopes) == 0 && !hasTimeFilter(request.Filter) {
+	if len(terms) == 0 && len(kinds) == 0 && len(labels) == 0 && !hasTimeFilter(request.Filter) {
 		return nil, nil, nil, 0, protocol.Invalid("query or filter is required")
 	}
 	limit := 8
@@ -737,7 +737,7 @@ func checkSearch(request protocol.MemorySearchRequest) ([]string, []string, []st
 	if limit < 1 || limit > 20 {
 		return nil, nil, nil, 0, protocol.Invalid("limit must be between 1 and 20")
 	}
-	return terms, types, scopes, limit, nil
+	return terms, kinds, labels, limit, nil
 }
 
 func invalidRange(after, before *protocol.Timestamp) bool {
@@ -748,14 +748,26 @@ func hasTimeFilter(filter *protocol.SearchFilter) bool {
 	return filter != nil && (filter.CreatedAfter != nil || filter.CreatedBefore != nil || filter.UpdatedAfter != nil || filter.UpdatedBefore != nil)
 }
 
-func matchesFilter(item protocol.Memory, filter *protocol.SearchFilter, types, scopes []string) bool {
+func matchesFilter(item protocol.Memory, filter *protocol.SearchFilter, kinds, labels []string) bool {
 	if filter == nil {
 		return true
 	}
-	if len(types) != 0 && !containsLabel(types, item.Type) || len(scopes) != 0 && !containsLabel(scopes, item.Scope) {
+	if len(kinds) != 0 && !containsKind(kinds, item.Kind) {
+		return false
+	}
+	if len(labels) != 0 && !containsLabel(labels, item.Label) {
 		return false
 	}
 	return within(item.CreatedAt, filter.CreatedAfter, filter.CreatedBefore) && within(item.UpdatedAt, filter.UpdatedAfter, filter.UpdatedBefore)
+}
+
+func containsKind(values []string, kind string) bool {
+	for _, candidate := range values {
+		if candidate == kind {
+			return true
+		}
+	}
+	return false
 }
 
 func containsLabel(values []string, value *string) bool {
@@ -779,11 +791,9 @@ func matchTerms(item protocol.Memory, terms []string) (float64, bool) {
 		return 0, true
 	}
 	text := asciiFold(item.Content)
-	if item.Type != nil {
-		text += "\n" + asciiFold(*item.Type)
-	}
-	if item.Scope != nil {
-		text += "\n" + asciiFold(*item.Scope)
+	text += "\n" + asciiFold(item.Kind)
+	if item.Label != nil {
+		text += "\n" + asciiFold(*item.Label)
 	}
 	matched := 0
 	for _, term := range terms {

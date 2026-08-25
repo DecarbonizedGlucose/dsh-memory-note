@@ -8,12 +8,27 @@ const (
 	MemoryInvalid    = "invalid"
 )
 
+// MemoryKind enumerates the memory tracks that drive lifecycle and injection.
+// fact = a durable conclusion worth injecting into context (a fact, preference,
+// decision, constraint, or convention); note = a transient working note that is
+// read on demand and never injected.
+var MemoryKinds = []string{"fact", "note"}
+
+func ValidMemoryKind(value string) bool {
+	for _, kind := range MemoryKinds {
+		if kind == value {
+			return true
+		}
+	}
+	return false
+}
+
 type Memory struct {
 	ID           string         `json:"memory_id"`
 	WorkspaceID  int64          `json:"workspace_id"`
 	Content      string         `json:"content"`
-	Type         *string        `json:"type"`
-	Scope        *string        `json:"scope"`
+	Kind         string         `json:"kind"`
+	Label        *string        `json:"label"`
 	Source       []string       `json:"source"`
 	Metadata     map[string]any `json:"metadata"`
 	State        string         `json:"state"`
@@ -26,15 +41,15 @@ type Memory struct {
 
 type MemoryInput struct {
 	Content  string         `json:"content"`
-	Type     *string        `json:"type,omitempty"`
-	Scope    *string        `json:"scope,omitempty"`
+	Kind     string         `json:"kind"`
+	Label    *string        `json:"label,omitempty"`
 	Source   []string       `json:"source,omitempty"`
 	Metadata map[string]any `json:"metadata,omitempty"`
 }
 
 type SearchFilter struct {
-	Types         []string   `json:"types,omitempty"`
-	Scopes        []string   `json:"scopes,omitempty"`
+	Kinds         []string   `json:"kinds,omitempty"`
+	Labels        []string   `json:"labels,omitempty"`
 	CreatedAfter  *Timestamp `json:"created_after,omitempty"`
 	CreatedBefore *Timestamp `json:"created_before,omitempty"`
 	UpdatedAfter  *Timestamp `json:"updated_after,omitempty"`
@@ -43,8 +58,8 @@ type SearchFilter struct {
 
 type SearchHit struct {
 	ID        string    `json:"memory_id"`
-	Type      *string   `json:"type"`
-	Scope     *string   `json:"scope"`
+	Kind      string    `json:"kind"`
+	Label     *string   `json:"label"`
 	Version   int64     `json:"version"`
 	Snippet   string    `json:"snippet"`
 	Score     float64   `json:"score"`
@@ -54,8 +69,8 @@ type SearchHit struct {
 // ListItem is the compact row returned by memory-list.
 type ListItem struct {
 	ID           string    `json:"memory_id"`
-	Type         *string   `json:"type"`
-	Scope        *string   `json:"scope"`
+	Kind         string    `json:"kind"`
+	Label        *string   `json:"label"`
 	State        string    `json:"state"`
 	Version      int64     `json:"version"`
 	Supersedes   *string   `json:"supersedes"`
@@ -149,8 +164,8 @@ type MemoryUpdateRequest struct {
 	MemoryID        string          `json:"memory_id"`
 	ExpectedVersion int64           `json:"expected_version"`
 	Content         *string         `json:"content,omitempty"`
-	Type            *string         `json:"type,omitempty"`
-	Scope           *string         `json:"scope,omitempty"`
+	Kind            *string         `json:"kind,omitempty"`
+	Label           *string         `json:"label,omitempty"`
 	Source          *[]string       `json:"source,omitempty"`
 	Metadata        *map[string]any `json:"metadata,omitempty"`
 	Reason          string          `json:"reason,omitempty"`

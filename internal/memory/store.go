@@ -188,7 +188,7 @@ func (tx *Tx) Insert(ctx context.Context, memory protocol.Memory) error {
 	source, _ := json.Marshal(memory.Source)
 	metadata, _ := json.Marshal(memory.Metadata)
 	_, err := tx.ExecContext(ctx, statements.InsertMemory,
-		memory.ID, memory.WorkspaceID, memory.Content, nullable(memory.Type), nullable(memory.Scope),
+		memory.ID, memory.WorkspaceID, memory.Content, memory.Kind, nullable(memory.Label),
 		string(source), string(metadata), memory.State, memory.Version, nullable(memory.Supersedes),
 		nullable(memory.SupersededBy), memory.CreatedAt.Unix(), offsetMinutes(memory.CreatedAt),
 		memory.UpdatedAt.Unix(), offsetMinutes(memory.UpdatedAt))
@@ -205,7 +205,7 @@ func (tx *Tx) Archive(ctx context.Context, memory protocol.Memory, action string
 	source, _ := json.Marshal(memory.Source)
 	metadata, _ := json.Marshal(memory.Metadata)
 	_, err := tx.ExecContext(ctx, statements.InsertHistory,
-		memory.WorkspaceID, memory.ID, memory.Version, action, memory.Content, nullable(memory.Type), nullable(memory.Scope),
+		memory.WorkspaceID, memory.ID, memory.Version, action, memory.Content, memory.Kind, nullable(memory.Label),
 		string(source), string(metadata), memory.State, nullable(memory.Supersedes), nullable(memory.SupersededBy),
 		memory.CreatedAt.Unix(), offsetMinutes(memory.CreatedAt),
 		memory.UpdatedAt.Unix(), offsetMinutes(memory.UpdatedAt), archivedAt)
@@ -285,7 +285,7 @@ func (tx *Tx) Update(ctx context.Context, memory protocol.Memory, oldVersion int
 	source, _ := json.Marshal(memory.Source)
 	metadata, _ := json.Marshal(memory.Metadata)
 	result, err := tx.ExecContext(ctx, statements.UpdateMemory,
-		memory.Content, nullable(memory.Type), nullable(memory.Scope), string(source), string(metadata),
+		memory.Content, memory.Kind, nullable(memory.Label), string(source), string(metadata),
 		memory.State, memory.Version, nullable(memory.Supersedes), nullable(memory.SupersededBy),
 		memory.UpdatedAt.Unix(), offsetMinutes(memory.UpdatedAt), memory.WorkspaceID, memory.ID, oldVersion)
 	if err != nil {
@@ -343,17 +343,17 @@ type scanner interface{ Scan(...any) error }
 
 func scanMemory(row scanner) (protocol.Memory, error) {
 	var memory protocol.Memory
-	var memoryType, scope, supersedes, supersededBy stdsql.NullString
+	var label, supersedes, supersededBy stdsql.NullString
 	var source, metadata string
 	var created, createdOffset, updated, updatedOffset int64
-	if err := row.Scan(&memory.ID, &memory.WorkspaceID, &memory.Content, &memoryType, &scope, &source, &metadata,
+	if err := row.Scan(&memory.ID, &memory.WorkspaceID, &memory.Content, &memory.Kind, &label, &source, &metadata,
 		&memory.State, &memory.Version, &supersedes, &supersededBy, &created, &createdOffset, &updated, &updatedOffset); err != nil {
 		if errors.Is(err, stdsql.ErrNoRows) {
 			return protocol.Memory{}, protocol.NewError(protocol.CodeMemoryNotFound, "memory not found")
 		}
 		return protocol.Memory{}, internalError("cannot read memory")
 	}
-	memory.Type, memory.Scope = pointer(memoryType), pointer(scope)
+	memory.Label = pointer(label)
 	memory.Supersedes, memory.SupersededBy = pointer(supersedes), pointer(supersededBy)
 	if err := json.Unmarshal([]byte(source), &memory.Source); err != nil || memory.Source == nil {
 		return protocol.Memory{}, protocol.NewError(protocol.CodeWorkspaceBroken, "memory source is invalid")
@@ -367,7 +367,8 @@ func scanMemory(row scanner) (protocol.Memory, error) {
 	memory.UpdatedAt = timestampAt(updated, updatedOffset)
 	if memory.Version < 1 || memory.Version > protocol.MaxSafeInteger ||
 		createdOffset < -840 || createdOffset > 840 || updatedOffset < -840 || updatedOffset > 840 ||
-		(memory.State != protocol.MemoryActive && memory.State != protocol.MemorySuperseded && memory.State != protocol.MemoryInvalid) {
+		(memory.State != protocol.MemoryActive && memory.State != protocol.MemorySuperseded && memory.State != protocol.MemoryInvalid) ||
+		!protocol.ValidMemoryKind(memory.Kind) {
 		return protocol.Memory{}, protocol.NewError(protocol.CodeWorkspaceBroken, "memory row is invalid")
 	}
 	return memory, nil

@@ -14,11 +14,11 @@
     "request": {
       "workspace_id": 1,
       "filter": {
-        "types": [
-          "decision"
-        ],
         "created_after": "2026-01-01T00:00:00+08:00",
-        "created_before": "2026-12-31T23:59:59Z"
+        "created_before": "2026-12-31T23:59:59Z",
+        "kinds": [
+          "fact"
+        ]
       }
     }
   },
@@ -52,12 +52,12 @@
     "request": {
       "workspace_id": 1,
       "content": "Use SQLite.",
-      "type": "decision",
-      "scope": "storage",
       "source": [],
       "metadata": {
         "nullable": null
-      }
+      },
+      "kind": "fact",
+      "label": "storage"
     }
   },
   {
@@ -67,10 +67,9 @@
       "workspace_id": 1,
       "memory_id": "mem_example",
       "expected_version": 1,
-      "type": "",
-      "scope": "",
       "source": [],
-      "metadata": {}
+      "metadata": {},
+      "label": ""
     }
   },
   {
@@ -81,7 +80,8 @@
       "memory_id": "mem_example",
       "expected_version": 2,
       "new": {
-        "content": "Use PostgreSQL."
+        "content": "Use PostgreSQL.",
+        "kind": "note"
       }
     }
   },
@@ -172,7 +172,8 @@
     "request": {
       "workspace_id": 1,
       "content": "Use SQLite.",
-      "reason": "local-first"
+      "reason": "local-first",
+      "kind": "note"
     }
   },
   {
@@ -195,7 +196,8 @@
       "expected_version": 2,
       "reason": "migrated",
       "new": {
-        "content": "Use PostgreSQL."
+        "content": "Use PostgreSQL.",
+        "kind": "note"
       }
     }
   },

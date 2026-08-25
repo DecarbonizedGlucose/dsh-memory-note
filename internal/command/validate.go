@@ -37,12 +37,12 @@ func cleanInput(input protocol.MemoryInput) (protocol.MemoryInput, error) {
 		strings.ContainsRune(input.Content, 0) || len(input.Content) > 64*1024 {
 		return protocol.MemoryInput{}, protocol.Invalid("content is invalid")
 	}
-	var err error
-	input.Type, err = cleanLabel(input.Type, 128, "type")
-	if err != nil {
-		return protocol.MemoryInput{}, err
+	if !protocol.ValidMemoryKind(strings.TrimSpace(input.Kind)) {
+		return protocol.MemoryInput{}, protocol.Invalid("kind must be fact or note")
 	}
-	input.Scope, err = cleanLabel(input.Scope, 256, "scope")
+	input.Kind = strings.TrimSpace(input.Kind)
+	var err error
+	input.Label, err = cleanLabel(input.Label, 256, "label")
 	if err != nil {
 		return protocol.MemoryInput{}, err
 	}
@@ -111,8 +111,8 @@ func diffMemories(from, to protocol.Memory) []protocol.MemoryDiffChange {
 		}
 	}
 	compare("content", from.Content, to.Content)
-	compare("type", from.Type, to.Type)
-	compare("scope", from.Scope, to.Scope)
+	compare("kind", from.Kind, to.Kind)
+	compare("label", from.Label, to.Label)
 	compare("source", from.Source, to.Source)
 	compare("metadata", from.Metadata, to.Metadata)
 	compare("state", from.State, to.State)
