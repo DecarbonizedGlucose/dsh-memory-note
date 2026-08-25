@@ -75,7 +75,8 @@ func memorySearch(ctx context.Context, storeRoot, sessionID, raw string) (protoc
 		}
 		hits = append(hits, protocol.SearchHit{
 			ID: item.ID, Kind: item.Kind, Label: item.Label, Version: item.Version,
-			Snippet: snippet(item.Content), Score: score, MatchedTerms: matchedTerms, UpdatedAt: item.UpdatedAt,
+			Citation: protocol.Citation{MemoryID: item.ID, Version: item.Version},
+			Snippet:  snippet(item.Content), Score: score, MatchedTerms: matchedTerms, UpdatedAt: item.UpdatedAt,
 		})
 	}
 	sort.Slice(hits, func(i, j int) bool {

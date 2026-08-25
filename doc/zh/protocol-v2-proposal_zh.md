@@ -330,6 +330,7 @@ Response data：
       "kind": "fact",
       "label": "storage",
       "version": 2,
+      "citation": {"memory_id": "mem_...", "version": 2},
       "snippet": "Use SQLite in WAL mode.",
       "score": 0.000001,
       "matched_terms": 1,
@@ -340,6 +341,8 @@ Response data：
 ```
 
 SearchHit 的 label 未设置时为 null；kind 恒存在。`matched_terms` 是 0 到 prepared query term 总数之间的整数。snippet 取 content 开头最多 240 bytes，若截断则停在 UTF-8 编码边界（不产生半个字符）。无结果返回空数组。
+
+`citation` 是对该命中的确切版本引用——即 `{memory_id, version}` 二元组，模型在后续写操作中原样回填。它是模型 handle（§4.4）：模型把 `citation.memory_id` 作为 mutation 的 `memory_id`、`citation.version` 作为 `expected_version`；若版本已变，mutation 返回 `version_conflict`（§8）。citation 永不进入用户可见面。
 
 ### 7.2 `memory-get`
 
@@ -571,6 +574,8 @@ memory 写命令按以下顺序检查：
 3. 当前 state 是否允许该操作。
 
 因此一个已经被其他操作修改的旧请求首先得到 `version_conflict`。调用方应重新 `memory-get`，不得自动把 expected version 改成新值。
+
+`memory-search` 命中的 `citation` 为后续写操作提供 `expected_version`：调用方把 `citation.version` 作为 `expected_version` 传入，因此「检索后到写入前」之间发生的变更会以 `version_conflict` 暴露，而非静默覆盖更新的内容。
 
 `memory-delete` 不检查 state（任意 state 可删），但仍按上述顺序先检查存在性与版本。
 

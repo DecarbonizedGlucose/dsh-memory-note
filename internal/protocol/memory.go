@@ -61,10 +61,18 @@ type SearchHit struct {
 	Kind         string    `json:"kind"`
 	Label        *string   `json:"label"`
 	Version      int64     `json:"version"`
+	Citation     Citation  `json:"citation"`
 	Snippet      string    `json:"snippet"`
 	Score        float64   `json:"score"`
 	MatchedTerms int       `json:"matched_terms"`
 	UpdatedAt    Timestamp `json:"updated_at"`
+}
+
+// Citation is the exact reference to one version of a memory, used to seed a
+// later mutation's memory_id + expected_version.
+type Citation struct {
+	MemoryID string `json:"memory_id"`
+	Version  int64  `json:"version"`
 }
 
 // ListItem is the compact row returned by memory-list.

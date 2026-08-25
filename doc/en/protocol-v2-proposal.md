@@ -330,6 +330,7 @@ Response data:
       "kind": "fact",
       "label": "storage",
       "version": 2,
+      "citation": {"memory_id": "mem_...", "version": 2},
       "snippet": "Use SQLite in WAL mode.",
       "score": 0.000001,
       "matched_terms": 1,
@@ -340,6 +341,8 @@ Response data:
 ```
 
 A SearchHit's `label` is null when unset; `kind` is always present. `matched_terms` is an integer from 0 through the number of prepared query terms. `snippet` is the first 240 bytes of `content`, cut at a UTF-8 code-point boundary if truncated (never half a character). No results returns an empty array.
+
+`citation` is the exact reference to this hit's version — the pair `{memory_id, version}` that the model echoes into a later mutation. It is a model handle (§4.4): the model passes `citation.memory_id` as the mutation's `memory_id` and `citation.version` as its `expected_version`; if the version has since changed, the mutation returns `version_conflict` (§8). The citation never appears in user-visible surfaces.
 
 ### 7.2 `memory-get`
 
@@ -572,6 +575,8 @@ Memory write commands check, in order:
 3. whether the current state allows the operation.
 
 So a stale request that was already changed by another operation first gets `version_conflict`. The caller should re-read with `memory-get` and must not silently set `expected_version` to the new value.
+
+A `memory-search` hit's `citation` supplies the `expected_version` for a later mutation: the caller passes `citation.version` as `expected_version`, so a change between the search and the write surfaces as `version_conflict` rather than silently overwriting a newer fact.
 
 `memory-delete` does not check state (any state may be deleted) but still checks existence and version first, in that order.
 

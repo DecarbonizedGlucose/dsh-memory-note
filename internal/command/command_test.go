@@ -68,6 +68,10 @@ func TestWorkspaceAndMemoryLifecycle(t *testing.T) {
 	if len(search.Memories) != 1 || search.Memories[0].Score <= 0 || search.Memories[0].MatchedTerms != 1 {
 		t.Fatalf("search data = %#v", search)
 	}
+	// The hit's citation seeds a later mutation's memory_id + expected_version.
+	if search.Memories[0].Citation.MemoryID != item.ID || search.Memories[0].Citation.Version != item.Version {
+		t.Fatalf("citation = %#v, want %s@%d", search.Memories[0].Citation, item.ID, item.Version)
+	}
 
 	// ASCII case folding is applied before the query reaches FTS5.
 	filterOnly := wantData[protocol.MemorySearchData](t, call(t, ctx, storeRoot, "memory-search", map[string]any{

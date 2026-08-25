@@ -221,7 +221,7 @@ const TOOL_NAMES: Record<string, { name: string; description: string }> = {
   "memory-search": {
     name: "memory_search",
     description:
-      "Retrieve candidate active memories with local FTS5 lexical search and/or exact kind, label, and time filters. A higher score is a better BM25 match; this is candidate retrieval, not a relevance verdict.",
+      "Retrieve candidate active memories with local FTS5 lexical search and/or exact kind, label, and time filters. A higher score is a better BM25 match; this is candidate retrieval, not a relevance verdict. Each hit carries a citation (memory_id + version); pass citation.memory_id and citation.version as a later mutation's memory_id and expected_version so a change between search and write surfaces as version_conflict.",
   },
   "memory-list": {
     name: "memory_list",
@@ -359,14 +359,19 @@ const renderers: Record<string, Renderer> = {
   "workspace-delete": () => [{ type: "text", text: "workspace deleted (mapping and memory database)" }],
   "memory-search": (_args, value) => {
     const hits = (value.memories as Array<Record<string, JsonValue>>) ?? [];
-    const lines = hits.map((hit) =>
-      [
-        `- ${hit.memory_id} score ${hit.score ?? ""} matched terms ${hit.matched_terms ?? 0} version ${hit.version ?? ""}`,
+    const lines = hits.map((hit) => {
+      const citation = hit.citation as Record<string, JsonValue> | undefined;
+      const cite =
+        typeof citation?.memory_id === "string" && typeof citation?.version === "number"
+          ? ` cite ${citation.memory_id}@${citation.version}`
+          : "";
+      return [
+        `- ${hit.memory_id} score ${hit.score ?? ""} matched terms ${hit.matched_terms ?? 0} version ${hit.version ?? ""}${cite}`,
         typeof hit.kind === "string" ? ` kind ${KIND_LABELS[hit.kind] ?? hit.kind}` : "",
         hit.label ? ` label ${hit.label}` : "",
         `\n  ${hit.snippet ?? ""}`,
-      ].join(""),
-    );
+      ].join("");
+    });
     return [{ type: "text", text: lines.length > 0 ? lines.join("\n") : "no matching memories" }];
   },
   "memory-list": (_args, value) => {
