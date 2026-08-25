@@ -9,13 +9,13 @@ import (
 func MemorySearch(withQuery bool, kindCount, labelCount int, createdAfter, createdBefore, updatedAfter, updatedBefore bool) string {
 	var query strings.Builder
 	if withQuery {
-		query.WriteString(`SELECT m.memory_id, m.workspace_id, m.content, m.kind, m.label, m.source_json, m.metadata_json,
+		query.WriteString(`SELECT m.memory_id, m.workspace_id, m.content, m.kind, m.label, m.branches_json, m.source_json, m.metadata_json,
 			m.state, m.version, m.supersedes, m.superseded_by, m.created_at, m.created_offset,
 			m.updated_at, m.updated_offset, bm25(memory_fts)
 			FROM memory_fts JOIN memories AS m ON m.rowid = memory_fts.rowid
 			WHERE memory_fts MATCH ? AND m.workspace_id = ? AND m.state = 'active'`)
 	} else {
-		query.WriteString(`SELECT m.memory_id, m.workspace_id, m.content, m.kind, m.label, m.source_json, m.metadata_json,
+		query.WriteString(`SELECT m.memory_id, m.workspace_id, m.content, m.kind, m.label, m.branches_json, m.source_json, m.metadata_json,
 			m.state, m.version, m.supersedes, m.superseded_by, m.created_at, m.created_offset,
 			m.updated_at, m.updated_offset, 0.0
 			FROM memories AS m WHERE m.workspace_id = ? AND m.state = 'active'`)

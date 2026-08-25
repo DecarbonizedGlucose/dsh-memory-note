@@ -104,6 +104,7 @@ dsh-memory-note <subcommand> '<request-json>'
 | `content` | string | memory 正文。 |
 | `kind` | string | 记忆的分轨：`fact`（值得注入的长期结论）或 `note`（临时注记）。它驱动生命周期与注入轨；Go 强制枚举。 |
 | `label` | string 或 null | 调用方定义的开放标签。未设置时为 null。 |
+| `branches` | string[] 或 null | 该记忆限定可见的 git 分支；null 或 `[]` 表示「全分支可见」。 |
 | `source` | string[] | 来源标识。未设置时为 `[]`。 |
 | `metadata` | object | 调用方扩展信息。未设置时为 `{}`。 |
 | `state` | string | `active`、`superseded` 或 `invalid`。 |
@@ -126,10 +127,11 @@ create 和 supersede 的新内容使用相同字段：
 | `content` | 是 | 保存原文；去除首尾空白后不能为空；最大 64 KiB。 |
 | `kind` | 是 | `fact` 或 `note` 之一；其他值返回 `invalid_request`。 |
 | `label` | 否 | trim 后保存；空字符串表示未设置；最大 256 bytes。 |
+| `branches` | 否 | trim、去重、去空；最多 64 项，每项最大 256 bytes；空表示「全分支可见」。 |
 | `source` | 否 | trim、去空、去重并保序；最多 64 项，每项最大 512 bytes。 |
 | `metadata` | 否 | 任意 JSON object；按紧凑序列化（无多余空白）计最大 16 KiB；嵌套深度最大 32 层。 |
 
-Go 校验 kind 为枚举；不解释 label、source 或 metadata 的自然语言含义。
+Go 校验 kind 为枚举；不解释 label、branches、source 或 metadata 的自然语言含义。
 
 ### 4.3 Mutation reason
 
@@ -291,6 +293,7 @@ Request：
     "updated_after": "2026-01-01T00:00:00+08:00",
     "updated_before": "2026-12-31T23:59:59+08:00"
   },
+  "branch": "main",
   "limit": 8
 }
 ```
@@ -299,6 +302,7 @@ Request：
 - query 和 filter 至少有一个有效条件；
 - 空白 query 不算有效条件；空数组或空 filter 返回 `invalid_request`（不是被忽略）；
 - limit 可选，默认 8，范围 1..20；
+- `branch` 可选：设置时只返回该 git 分支可见的记忆——branches 为 null/空的记忆始终可见，有限制的记忆仅当 branch 在列表中才可见；省略 `branch` 时不按分支过滤（适配器通常自动传入 agent 当前分支，非 git 或 detached-HEAD 工作区直接省略）。
 - 时间边界包含；`after` 不得晚于 `before`；时间比较按 UTC 时刻进行；
 - 只返回 active memory。
 
@@ -414,6 +418,7 @@ Request：
   "content": "Use SQLite.",
   "kind": "fact",
   "label": "storage",
+  "branches": ["main"],
   "source": ["conversation:123"],
   "metadata": {"reason": "local-first"},
   "reason": "chosen for local-first storage"
@@ -436,6 +441,7 @@ Request：
   "content": "Use SQLite in WAL mode.",
   "kind": "fact",
   "label": "storage",
+  "branches": ["main", "dev"],
   "source": ["conversation:456"],
   "metadata": {"reason": "better concurrency"},
   "reason": "WAL mode improves concurrent access"
@@ -444,9 +450,9 @@ Request：
 
 - `workspace_id`、`memory_id`、`expected_version` 必填；
 - `reason` 可选（规则见 §4.3）；
-- content/kind/label/source/metadata 至少出现一个；
+- content/kind/label/branches/source/metadata 至少出现一个；
 - 字段缺失表示保持原值；
-- `kind` 只能改为枚举内的另一值；`label: ""` 表示清除；
+- `kind` 只能改为枚举内的另一值；`label: ""` 表示清除；`branches: []` 清除分支限制（全分支可见）。
 - `source: []` 或 `metadata: {}` 表示清空；
 - 所有字段都是整体替换，不做 merge 或 append；
 - 目标必须为 active，版本必须匹配；

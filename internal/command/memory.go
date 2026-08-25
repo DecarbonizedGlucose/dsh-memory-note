@@ -65,6 +65,9 @@ func memorySearch(ctx context.Context, storeRoot, sessionID, raw string) (protoc
 	hits := make([]protocol.SearchHit, 0)
 	for _, candidate := range candidates {
 		item := candidate.Memory
+		if !matchesBranch(item.Branches, request.Branch) {
+			continue
+		}
 		matchedTerms := countMatchedTerms(item, terms)
 		if len(terms) != 0 && matchedTerms == 0 {
 			continue
@@ -624,7 +627,7 @@ func newMemory(workspaceID int64, input protocol.MemoryInput, supersedes *string
 	}
 	created := now()
 	return protocol.Memory{
-		ID: id, WorkspaceID: workspaceID, Content: input.Content, Kind: input.Kind, Label: input.Label,
+		ID: id, WorkspaceID: workspaceID, Content: input.Content, Kind: input.Kind, Label: input.Label, Branches: input.Branches,
 		Source: input.Source, Metadata: input.Metadata, State: protocol.MemoryActive, Version: 1,
 		Supersedes: supersedes, CreatedAt: created, UpdatedAt: created,
 	}, nil
@@ -685,6 +688,13 @@ func cleanUpdate(request *protocol.MemoryUpdateRequest) error {
 			return err
 		}
 	}
+	if request.Branches != nil {
+		cleaned, err := cleanBranches(*request.Branches)
+		if err != nil {
+			return err
+		}
+		request.Branches = &cleaned
+	}
 	if request.Source != nil {
 		cleaned, err := cleanSource(*request.Source)
 		if err != nil {
@@ -710,6 +720,9 @@ func applyUpdate(item *protocol.Memory, request protocol.MemoryUpdateRequest) {
 	}
 	if request.Label != nil {
 		item.Label, _ = cleanLabel(request.Label, 256, "label")
+	}
+	if request.Branches != nil {
+		item.Branches = *request.Branches
 	}
 	if request.Source != nil {
 		item.Source = *request.Source

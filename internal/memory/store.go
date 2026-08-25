@@ -229,7 +229,7 @@ func (tx *Tx) Insert(ctx context.Context, memory protocol.Memory) error {
 	source, _ := json.Marshal(memory.Source)
 	metadata, _ := json.Marshal(memory.Metadata)
 	_, err := tx.ExecContext(ctx, statements.InsertMemory,
-		memory.ID, memory.WorkspaceID, memory.Content, memory.Kind, nullable(memory.Label),
+		memory.ID, memory.WorkspaceID, memory.Content, memory.Kind, nullable(memory.Label), branchesJSON(memory.Branches),
 		string(source), string(metadata), memory.State, memory.Version, nullable(memory.Supersedes),
 		nullable(memory.SupersededBy), memory.CreatedAt.Unix(), offsetMinutes(memory.CreatedAt),
 		memory.UpdatedAt.Unix(), offsetMinutes(memory.UpdatedAt))
@@ -246,7 +246,7 @@ func (tx *Tx) Archive(ctx context.Context, memory protocol.Memory, action string
 	source, _ := json.Marshal(memory.Source)
 	metadata, _ := json.Marshal(memory.Metadata)
 	_, err := tx.ExecContext(ctx, statements.InsertHistory,
-		memory.WorkspaceID, memory.ID, memory.Version, action, memory.Content, memory.Kind, nullable(memory.Label),
+		memory.WorkspaceID, memory.ID, memory.Version, action, memory.Content, memory.Kind, nullable(memory.Label), branchesJSON(memory.Branches),
 		string(source), string(metadata), memory.State, nullable(memory.Supersedes), nullable(memory.SupersededBy),
 		memory.CreatedAt.Unix(), offsetMinutes(memory.CreatedAt),
 		memory.UpdatedAt.Unix(), offsetMinutes(memory.UpdatedAt), archivedAt)
@@ -326,7 +326,7 @@ func (tx *Tx) Update(ctx context.Context, memory protocol.Memory, oldVersion int
 	source, _ := json.Marshal(memory.Source)
 	metadata, _ := json.Marshal(memory.Metadata)
 	result, err := tx.ExecContext(ctx, statements.UpdateMemory,
-		memory.Content, memory.Kind, nullable(memory.Label), string(source), string(metadata),
+		memory.Content, memory.Kind, nullable(memory.Label), branchesJSON(memory.Branches), string(source), string(metadata),
 		memory.State, memory.Version, nullable(memory.Supersedes), nullable(memory.SupersededBy),
 		memory.UpdatedAt.Unix(), offsetMinutes(memory.UpdatedAt), memory.WorkspaceID, memory.ID, oldVersion)
 	if err != nil {
@@ -388,10 +388,10 @@ func scanMemory(row scanner) (protocol.Memory, error) {
 
 func scanMemoryWithExtra(row scanner, extra ...any) (protocol.Memory, error) {
 	var memory protocol.Memory
-	var label, supersedes, supersededBy stdsql.NullString
+	var label, branches, supersedes, supersededBy stdsql.NullString
 	var source, metadata string
 	var created, createdOffset, updated, updatedOffset int64
-	targets := []any{&memory.ID, &memory.WorkspaceID, &memory.Content, &memory.Kind, &label, &source, &metadata,
+	targets := []any{&memory.ID, &memory.WorkspaceID, &memory.Content, &memory.Kind, &label, &branches, &source, &metadata,
 		&memory.State, &memory.Version, &supersedes, &supersededBy, &created, &createdOffset, &updated, &updatedOffset}
 	targets = append(targets, extra...)
 	if err := row.Scan(targets...); err != nil {
@@ -402,6 +402,11 @@ func scanMemoryWithExtra(row scanner, extra ...any) (protocol.Memory, error) {
 	}
 	memory.Label = pointer(label)
 	memory.Supersedes, memory.SupersededBy = pointer(supersedes), pointer(supersededBy)
+	if branches.Valid {
+		if err := json.Unmarshal([]byte(branches.String), &memory.Branches); err != nil {
+			return protocol.Memory{}, protocol.NewError(protocol.CodeWorkspaceBroken, "memory branches are invalid")
+		}
+	}
 	if err := json.Unmarshal([]byte(source), &memory.Source); err != nil || memory.Source == nil {
 		return protocol.Memory{}, protocol.NewError(protocol.CodeWorkspaceBroken, "memory source is invalid")
 	}
@@ -433,6 +438,16 @@ func nullableInt(value *int64) any {
 		return nil
 	}
 	return *value
+}
+
+// branchesJSON serializes a branch list for the branches_json column: nil or
+// empty means "visible on all branches" and is stored as SQL NULL.
+func branchesJSON(branches []string) any {
+	if len(branches) == 0 {
+		return nil
+	}
+	raw, _ := json.Marshal(branches)
+	return string(raw)
 }
 
 func pointer(value stdsql.NullString) *string {

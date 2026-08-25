@@ -2,14 +2,14 @@ package statements
 
 const (
 	SetMetaApplicationID = `PRAGMA application_id = 1146309965`
-	SetSchemaVersion     = `PRAGMA user_version = 5`
+	SetSchemaVersion     = `PRAGMA user_version = 6`
 
 	CreateMetaInfo = `CREATE TABLE meta_info (
 		id INTEGER PRIMARY KEY CHECK(id = 1),
-		schema_version INTEGER NOT NULL CHECK(schema_version = 5),
+		schema_version INTEGER NOT NULL CHECK(schema_version = 6),
 		cursor_key TEXT NOT NULL
 	)`
-	InsertMetaInfo = `INSERT INTO meta_info(id, schema_version, cursor_key) VALUES(1, 5, ?)`
+	InsertMetaInfo = `INSERT INTO meta_info(id, schema_version, cursor_key) VALUES(1, 6, ?)`
 	ReadMetaInfo   = `SELECT schema_version, cursor_key FROM meta_info WHERE id = 1`
 
 	CreateWorkspaces = `CREATE TABLE workspaces (

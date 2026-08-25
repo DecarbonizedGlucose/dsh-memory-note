@@ -9,6 +9,8 @@
 import type { Context } from "@deepseek-ai/cordis";
 import { defineTool, type ToolExecution } from "@deepseek-ai/dsh-tools";
 import type { ApprovalOutcome } from "@deepseek-ai/dsh-user-approval";
+import { readFileSync } from "node:fs";
+import path from "node:path";
 import { checkCoreVersion, CoreError, CoreErrorCode, runCore, type CoreOptions, type JsonValue } from "./core.js";
 import { protocolMajor } from "./version.js";
 
@@ -67,6 +69,11 @@ const memoryInputParams: Record<string, ParamSpec> = {
     description: "The memory's track: fact (a durable conclusion) or note (a transient note).",
   },
   label: { type: "string", description: "An open caller-defined tag; empty means unset." },
+  branches: {
+    type: "array",
+    items: { type: "string" },
+    description: "Git branches this memory is limited to; omit (or empty) for all branches.",
+  },
   source: { type: "array", items: { type: "string" }, description: "Source identifiers." },
   metadata: {
     type: "object",
@@ -114,6 +121,11 @@ export const parameterSpecs: Record<string, Record<string, ParamSpec>> = {
     query: { type: "string", description: "Free-text terms matched by the local FTS5 index." },
     filter: searchFilter,
     limit: { type: "number", description: "1..20, default 8." },
+    branch: {
+      type: "string",
+      description:
+        "Restrict results to memories visible on this git branch. Omit to auto-detect the agent's current branch; a memory with no branch restriction is always visible.",
+    },
   },
   "memory-list": {
     workspace_id: workspaceId,
@@ -141,6 +153,11 @@ export const parameterSpecs: Record<string, Record<string, ParamSpec>> = {
       description: "The memory's track: fact (a durable conclusion) or note (a transient note).",
     },
     label: { type: "string", description: "An open caller-defined tag." },
+    branches: {
+      type: "array",
+      items: { type: "string" },
+      description: "Git branches this memory is limited to; omit (or empty) for all branches.",
+    },
     source: { type: "array", items: { type: "string" }, description: "Source identifiers." },
     metadata: {
       type: "object",
@@ -156,6 +173,11 @@ export const parameterSpecs: Record<string, Record<string, ParamSpec>> = {
     content: { type: "string", description: "Whole replacement of the content." },
     kind: { type: "string", description: "Whole replacement; one of fact or note." },
     label: { type: "string", description: 'Whole replacement; "" clears.' },
+    branches: {
+      type: "array",
+      items: { type: "string" },
+      description: "Whole replacement; [] clears the restriction (all branches).",
+    },
     source: { type: "array", items: { type: "string" }, description: "Whole replacement; [] clears." },
     metadata: {
       type: "object",
@@ -319,6 +341,7 @@ function renderMemory(memory: Record<string, JsonValue>): string {
   if (typeof memory.content === "string") text += `\ncontent: ${memory.content}`;
   if (typeof memory.kind === "string" && memory.kind !== "") text += `\nkind: ${KIND_LABELS[memory.kind] ?? memory.kind}`;
   if (typeof memory.label === "string" && memory.label !== "") text += `\nlabel: ${memory.label}`;
+  if (Array.isArray(memory.branches) && memory.branches.length > 0) text += `\nbranches: ${memory.branches.join(", ")}`;
   if (Array.isArray(memory.source) && memory.source.length > 0) text += `\nsource: ${memory.source.join(", ")}`;
   if (typeof memory.supersedes_content === "string" && memory.supersedes_content !== "") {
     text += `\nsupersedes an earlier memory: "${memory.supersedes_content}"`;
@@ -568,6 +591,10 @@ export function registerMemoryNoteTools(ctx: Context, config: MemoryNoteConfig):
           if (needsWorkspaceId && request.workspace_id === undefined) {
             request.workspace_id = await resolveWorkspaceId(exec, config);
           }
+          if (subcommand === "memory-search" && request.branch === undefined) {
+            const branch = resolveBranch(exec, config);
+            if (branch !== undefined) request.branch = branch;
+          }
           if (WRITE_TOOLS.has(spec.name)) {
             await requireApproval(ctx, exec, spec.name, request, config);
           }
@@ -594,6 +621,23 @@ function agentCwd(exec: ToolExecution): string | undefined {
   const agent = exec.agent as unknown as { session?: { header?: { cwd?: unknown } } } | undefined;
   const cwd = agent?.session?.header?.cwd;
   return typeof cwd === "string" ? cwd : undefined;
+}
+
+/** The agent's current git branch: an explicit env override wins, otherwise
+ * the cwd's `.git/HEAD` is read. Non-git and detached-HEAD yield undefined,
+ * meaning "no branch filter". */
+function resolveBranch(exec: ToolExecution, config: MemoryNoteConfig): string | undefined {
+  const envBranch = config.env?.["DSH_MEMORY_NOTE_GIT_BRANCH"] ?? process.env.DSH_MEMORY_NOTE_GIT_BRANCH;
+  if (envBranch) return envBranch;
+  const cwd = agentCwd(exec);
+  if (cwd === undefined) return undefined;
+  try {
+    const head = readFileSync(path.join(cwd, ".git", "HEAD"), "utf8").trim();
+    const match = /^ref: refs\/heads\/(.+)$/.exec(head);
+    return match ? match[1] : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 async function resolveWorkspaceId(exec: ToolExecution, config: MemoryNoteConfig): Promise<number> {
@@ -732,6 +776,10 @@ async function describeApproval(
       if (typeof request.content === "string") parts.push(`content → "${short(request.content)}"`);
       if (request.kind !== undefined) parts.push(`kind → "${text(request.kind)}"`);
       if (request.label !== undefined) parts.push(`label ${text(request.label) === "" ? "cleared" : `→ "${text(request.label)}"`}`);
+      if (request.branches !== undefined) {
+        const branches = Array.isArray(request.branches) ? request.branches.join(", ") : "";
+        parts.push(branches === "" ? "branch restriction cleared" : `branches → "${branches}"`);
+      }
       if (request.source !== undefined) parts.push("source updated");
       if (request.metadata !== undefined) parts.push("metadata updated");
       return `update memory "${short(previous)}": ${parts.join(", ")}`;

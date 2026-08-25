@@ -46,6 +46,10 @@ func cleanInput(input protocol.MemoryInput) (protocol.MemoryInput, error) {
 	if err != nil {
 		return protocol.MemoryInput{}, err
 	}
+	input.Branches, err = cleanBranches(input.Branches)
+	if err != nil {
+		return protocol.MemoryInput{}, err
+	}
 	input.Source, err = cleanSource(input.Source)
 	if err != nil {
 		return protocol.MemoryInput{}, err
@@ -99,6 +103,42 @@ func cleanReason(value string) (string, error) {
 		return "", protocol.Invalid("reason is too long")
 	}
 	return cleaned, nil
+}
+
+// cleanBranches trims, de-duplicates, and drops empty branch names. An empty
+// result means "visible on all branches" and is stored as nil.
+func cleanBranches(values []string) ([]string, error) {
+	seen := make(map[string]bool)
+	result := make([]string, 0, len(values))
+	for index, value := range values {
+		value = strings.TrimSpace(value)
+		if len(value) > 256 {
+			return nil, protocol.Invalid(fmt.Sprintf("branch item %d is too long", index))
+		}
+		if value != "" && !seen[value] {
+			seen[value] = true
+			result = append(result, value)
+		}
+	}
+	if len(result) > 64 {
+		return nil, protocol.Invalid("branches has too many items")
+	}
+	return result, nil
+}
+
+// matchesBranch reports whether a memory with the given branch restriction is
+// visible under the requested branch. A nil request branch or a nil/empty
+// restriction means "all branches".
+func matchesBranch(branches []string, branch *string) bool {
+	if branch == nil || len(branches) == 0 {
+		return true
+	}
+	for _, candidate := range branches {
+		if candidate == *branch {
+			return true
+		}
+	}
+	return false
 }
 
 // diffMemories compares two versions of the same memory and returns only the

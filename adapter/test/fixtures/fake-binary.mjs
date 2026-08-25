@@ -52,6 +52,7 @@ const memory = (req) => ({
   content: req.content ?? "",
   kind: "fact",
   label: null,
+  branches: req.branches ?? null,
   source: [],
   metadata: {},
   state: "active",

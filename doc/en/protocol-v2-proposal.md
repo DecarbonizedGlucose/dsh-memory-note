@@ -104,6 +104,7 @@ A full Memory response always carries these fields:
 | `content` | string | The memory body. |
 | `kind` | string | The memory's track: `fact` (a durable conclusion worth injecting) or `note` (a transient working note). It drives lifecycle and the injection track; Go enforces the enumeration. |
 | `label` | string or null | An open caller-defined tag. Null when unset. |
+| `branches` | string[] or null | The git branches this memory is limited to; null or `[]` means "all branches". |
 | `source` | string[] | Source identifiers. `[]` when unset. |
 | `metadata` | object | Caller-defined extension information. `{}` when unset. |
 | `state` | string | `active`, `superseded`, or `invalid`. |
@@ -126,10 +127,11 @@ A response must not omit any of these fields just because a value is empty.
 | `content` | yes | Stored as-is; must be non-empty after trimming surrounding whitespace; at most 64 KiB. |
 | `kind` | yes | One of `fact` or `note`; anything else is `invalid_request`. |
 | `label` | no | Stored after trimming; empty string means unset; at most 256 bytes. |
+| `branches` | no | Trimmed, de-duplicated, empty entries dropped; at most 64 items, each at most 256 bytes; empty means "all branches". |
 | `source` | no | Trimmed, de-duplicated in order, empty entries dropped; at most 64 items, each at most 512 bytes. |
 | `metadata` | no | Any JSON object; at most 16 KiB when compact-serialized (no insignificant whitespace); nesting depth at most 32. |
 
-Go validates `kind` as an enumeration; it does not interpret the natural-language meaning of `label`, `source`, or `metadata`.
+Go validates `kind` as an enumeration; it does not interpret the natural-language meaning of `label`, `branches`, `source`, or `metadata`.
 
 ### 4.3 Mutation reason
 
@@ -291,6 +293,7 @@ Request:
     "updated_after": "2026-01-01T00:00:00+08:00",
     "updated_before": "2026-12-31T23:59:59+08:00"
   },
+  "branch": "main",
   "limit": 8
 }
 ```
@@ -299,6 +302,7 @@ Request:
 - At least one of `query` or `filter` must carry an effective condition.
 - A blank query is not effective; an empty array or empty filter returns `invalid_request` (it is not simply ignored).
 - `limit` is optional, defaults to 8, range 1..20.
+- `branch` is optional: when set, only memories visible on that git branch are returned — a memory with a null/empty `branches` restriction is always visible; one with a restriction is visible only when the branch is listed. When `branch` is omitted, no branch filtering is applied (the adapter normally supplies the agent's current branch; a non-git or detached-HEAD workspace simply omits it).
 - Time bounds are inclusive; `after` must not be later than `before`; comparisons use the UTC instant.
 - Only active memories are returned.
 
@@ -414,6 +418,7 @@ Request:
   "content": "Use SQLite.",
   "kind": "fact",
   "label": "storage",
+  "branches": ["main"],
   "source": ["conversation:123"],
   "metadata": {"reason": "local-first"},
   "reason": "chosen for local-first storage"
@@ -436,6 +441,7 @@ Request:
   "content": "Use SQLite in WAL mode.",
   "kind": "fact",
   "label": "storage",
+  "branches": ["main", "dev"],
   "source": ["conversation:456"],
   "metadata": {"reason": "better concurrency"},
   "reason": "WAL mode improves concurrent access"
@@ -444,9 +450,9 @@ Request:
 
 - `workspace_id`, `memory_id`, and `expected_version` are required.
 - `reason` is optional (rules per §4.3).
-- At least one of `content`/`kind`/`label`/`source`/`metadata` must appear.
+- At least one of `content`/`kind`/`label`/`branches`/`source`/`metadata` must appear.
 - A missing field keeps its current value.
-- `kind` may be changed only to another value of the enumeration; `label: ""` clears the label.
+- `kind` may be changed only to another value of the enumeration; `label: ""` clears the label; `branches: []` clears the branch restriction (all branches).
 - `source: []` or `metadata: {}` clears the field.
 - Every field replaces wholesale; nothing merges or appends.
 - The target must be `active` and the version must match.

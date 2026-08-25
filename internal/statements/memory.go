@@ -6,9 +6,9 @@ const (
 	CreateMemoryInfo = `CREATE TABLE memory_info (
 		id INTEGER PRIMARY KEY CHECK(id = 1),
 		workspace_id INTEGER NOT NULL CHECK(workspace_id BETWEEN 1 AND 9007199254740991),
-		schema_version INTEGER NOT NULL CHECK(schema_version = 5)
+		schema_version INTEGER NOT NULL CHECK(schema_version = 6)
 	)`
-	InsertMemoryInfo = `INSERT INTO memory_info(id, workspace_id, schema_version) VALUES(1, ?, 5)`
+	InsertMemoryInfo = `INSERT INTO memory_info(id, workspace_id, schema_version) VALUES(1, ?, 6)`
 	ReadMemoryInfo   = `SELECT workspace_id, schema_version FROM memory_info WHERE id = 1`
 
 	CreateMemories = `CREATE TABLE memories (
@@ -17,6 +17,7 @@ const (
 		content TEXT NOT NULL,
 		kind TEXT NOT NULL CHECK(kind IN ('fact', 'note')),
 		label TEXT,
+		branches_json TEXT,
 		source_json TEXT NOT NULL,
 		metadata_json TEXT NOT NULL,
 		state TEXT NOT NULL CHECK(state IN ('active', 'superseded', 'invalid')),
@@ -40,6 +41,7 @@ const (
 		content TEXT NOT NULL,
 		kind TEXT NOT NULL CHECK(kind IN ('fact', 'note')),
 		label TEXT,
+		branches_json TEXT,
 		source_json TEXT NOT NULL,
 		metadata_json TEXT NOT NULL,
 		state TEXT NOT NULL,
@@ -93,23 +95,23 @@ const (
 	RebuildMemoryFTS   = `INSERT INTO memory_fts(memory_fts) VALUES('rebuild')`
 	CreateMemoriesList = `CREATE INDEX memories_list ON memories(workspace_id, updated_at, memory_id)`
 
-	SelectMemoryColumns = `SELECT memory_id, workspace_id, content, kind, label, source_json, metadata_json,
+	SelectMemoryColumns = `SELECT memory_id, workspace_id, content, kind, label, branches_json, source_json, metadata_json,
 		state, version, supersedes, superseded_by, created_at, created_offset, updated_at, updated_offset FROM memories`
 	SelectMemoryByID = SelectMemoryColumns + ` WHERE workspace_id = ? AND memory_id = ?`
 	SelectFirstPage  = SelectMemoryColumns + ` WHERE workspace_id = ? ORDER BY updated_at DESC, memory_id ASC LIMIT ?`
 	SelectNextPage   = SelectMemoryColumns + ` WHERE workspace_id = ? AND (updated_at < ? OR (updated_at = ? AND memory_id > ?))
 		ORDER BY updated_at DESC, memory_id ASC LIMIT ?`
 
-	InsertMemory = `INSERT INTO memories(memory_id, workspace_id, content, kind, label, source_json,
+	InsertMemory = `INSERT INTO memories(memory_id, workspace_id, content, kind, label, branches_json, source_json,
 		metadata_json, state, version, supersedes, superseded_by, created_at, created_offset, updated_at, updated_offset)
-		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
-	InsertHistory = `INSERT INTO memory_history(workspace_id, memory_id, version, action, content, kind, label,
+	InsertHistory = `INSERT INTO memory_history(workspace_id, memory_id, version, action, content, kind, label, branches_json,
 		source_json, metadata_json, state, supersedes, superseded_by, created_at, created_offset,
 		updated_at, updated_offset, archived_at)
-		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
-	SelectHistoryColumns = `SELECT memory_id, workspace_id, content, kind, label, source_json, metadata_json,
+	SelectHistoryColumns = `SELECT memory_id, workspace_id, content, kind, label, branches_json, source_json, metadata_json,
 		state, version, supersedes, superseded_by, created_at, created_offset, updated_at, updated_offset FROM memory_history`
 	SelectHistoryVersion = SelectHistoryColumns + ` WHERE workspace_id = ? AND memory_id = ? AND version = ?`
 
@@ -126,7 +128,7 @@ const (
 	DeleteMemoryEvents = `DELETE FROM memory_events WHERE workspace_id = ? AND memory_id = ?`
 	ClearMemoryEvents  = `DELETE FROM memory_events WHERE workspace_id = ?`
 
-	UpdateMemory = `UPDATE memories SET content = ?, kind = ?, label = ?, source_json = ?, metadata_json = ?,
+	UpdateMemory = `UPDATE memories SET content = ?, kind = ?, label = ?, branches_json = ?, source_json = ?, metadata_json = ?,
 		state = ?, version = ?, supersedes = ?, superseded_by = ?, updated_at = ?, updated_offset = ?
 		WHERE workspace_id = ? AND memory_id = ? AND version = ?`
 

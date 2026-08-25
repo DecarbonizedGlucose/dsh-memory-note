@@ -455,6 +455,48 @@ func TestUnexpectedMemoryFileFailsClosed(t *testing.T) {
 	wantError(t, call(t, ctx, storeRoot, "workspace-resolve", map[string]any{"path": project}), protocol.CodeWorkspaceBroken)
 }
 
+func TestBranchFilter(t *testing.T) {
+	ctx := context.Background()
+	storeRoot := filepath.Join(t.TempDir(), "store")
+	project := t.TempDir()
+	wid := wantData[protocol.WorkspaceRegisterData](t,
+		call(t, ctx, storeRoot, "workspace-register", map[string]any{"path": project})).Workspace.ID
+
+	wantData[protocol.MemoryCreateData](t, call(t, ctx, storeRoot, "memory-create", map[string]any{
+		"workspace_id": wid, "content": "branchtest main only", "kind": "note", "branches": []string{"main"},
+	}))
+	wantData[protocol.MemoryCreateData](t, call(t, ctx, storeRoot, "memory-create", map[string]any{
+		"workspace_id": wid, "content": "branchtest dev only", "kind": "note", "branches": []string{"dev"},
+	}))
+	wantData[protocol.MemoryCreateData](t, call(t, ctx, storeRoot, "memory-create", map[string]any{
+		"workspace_id": wid, "content": "branchtest all branches", "kind": "note",
+	}))
+
+	search := func(branch *string) int {
+		request := map[string]any{"workspace_id": wid, "query": "branchtest"}
+		if branch != nil {
+			request["branch"] = *branch
+		}
+		return len(wantData[protocol.MemorySearchData](t, call(t, ctx, storeRoot, "memory-search", request)).Memories)
+	}
+
+	if got := search(nil); got != 3 {
+		t.Fatalf("no branch filter returned %d, want 3", got)
+	}
+	main := "main"
+	if got := search(&main); got != 2 {
+		t.Fatalf("branch=main returned %d, want 2", got)
+	}
+	dev := "dev"
+	if got := search(&dev); got != 2 {
+		t.Fatalf("branch=dev returned %d, want 2", got)
+	}
+	feature := "feature"
+	if got := search(&feature); got != 1 {
+		t.Fatalf("branch=feature returned %d, want 1 (only all-branches)", got)
+	}
+}
+
 func TestWorkspaceDeleteCleansBrokenWorkspace(t *testing.T) {
 	ctx := context.Background()
 	storeRoot := filepath.Join(t.TempDir(), "store")

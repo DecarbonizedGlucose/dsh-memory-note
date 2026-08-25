@@ -195,6 +195,26 @@ test("read tools run without asking approval", async () => {
   assert.equal(approval.asked.length, 0);
 });
 
+test("memory_search injects the git branch from the environment", async () => {
+  const previous = process.env.DSH_MEMORY_NOTE_GIT_BRANCH;
+  process.env.DSH_MEMORY_NOTE_GIT_BRANCH = "main";
+  try {
+    const { tools, calls } = makeContext();
+    const search = tools.find((tool) => tool.name === "memory_search");
+    assert.ok(search);
+    await search.execute({ query: "sqlite" }, fakeExec(workspacePath));
+    const searchCalls = calls().filter((entry) => entry.subcommand === "memory-search");
+    assert.equal(searchCalls.length, 1);
+    assert.equal(searchCalls[0]?.request.branch, "main");
+  } finally {
+    if (previous === undefined) {
+      delete process.env.DSH_MEMORY_NOTE_GIT_BRANCH;
+    } else {
+      process.env.DSH_MEMORY_NOTE_GIT_BRANCH = previous;
+    }
+  }
+});
+
 test("a v1 core is rejected before any business command", async () => {
   const { approval, tools, calls } = makeContext("scripted", "allowed-once", "1.0.0");
   const create = tools.find((tool) => tool.name === "memory_create");

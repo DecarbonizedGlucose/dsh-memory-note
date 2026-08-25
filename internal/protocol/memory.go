@@ -29,6 +29,7 @@ type Memory struct {
 	Content      string         `json:"content"`
 	Kind         string         `json:"kind"`
 	Label        *string        `json:"label"`
+	Branches     []string       `json:"branches"`
 	Source       []string       `json:"source"`
 	Metadata     map[string]any `json:"metadata"`
 	State        string         `json:"state"`
@@ -43,6 +44,7 @@ type MemoryInput struct {
 	Content  string         `json:"content"`
 	Kind     string         `json:"kind"`
 	Label    *string        `json:"label,omitempty"`
+	Branches []string       `json:"branches,omitempty"`
 	Source   []string       `json:"source,omitempty"`
 	Metadata map[string]any `json:"metadata,omitempty"`
 }
@@ -103,6 +105,7 @@ type MemorySearchRequest struct {
 	Query       string        `json:"query,omitempty"`
 	Filter      *SearchFilter `json:"filter,omitempty"`
 	Limit       *int          `json:"limit,omitempty"`
+	Branch      *string       `json:"branch,omitempty"`
 }
 type MemorySearchData struct {
 	Memories []SearchHit `json:"memories"`
@@ -175,6 +178,7 @@ type MemoryUpdateRequest struct {
 	Content         *string         `json:"content,omitempty"`
 	Kind            *string         `json:"kind,omitempty"`
 	Label           *string         `json:"label,omitempty"`
+	Branches        *[]string       `json:"branches,omitempty"`
 	Source          *[]string       `json:"source,omitempty"`
 	Metadata        *map[string]any `json:"metadata,omitempty"`
 	Reason          string          `json:"reason,omitempty"`
