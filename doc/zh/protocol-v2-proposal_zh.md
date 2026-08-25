@@ -84,8 +84,8 @@ dsh-memory-note <subcommand> '<request-json>'
   "memory_id": "mem_...",
   "workspace_id": 1,
   "content": "Use SQLite.",
-  "type": "decision",
-  "scope": "storage",
+  "kind": "fact",
+  "label": "storage",
   "source": ["conversation:123"],
   "metadata": {"reason": "local-first"},
   "state": "active",
@@ -102,8 +102,8 @@ dsh-memory-note <subcommand> '<request-json>'
 | `memory_id` | string | Go 生成的不透明 ID；调用方不得解析格式。仅在工作区内唯一，跨工作区可能重复，因此所有读取或修改必须同时给出 `workspace_id` 与 `memory_id`。 |
 | `workspace_id` | integer | 所属 WID。 |
 | `content` | string | memory 正文。 |
-| `type` | string 或 null | 调用方定义的分类。未设置时为 null。 |
-| `scope` | string 或 null | 调用方定义的范围。未设置时为 null。 |
+| `kind` | string | 记忆的分轨：`fact`（值得注入的长期结论）或 `note`（临时注记）。它驱动生命周期与注入轨；Go 强制枚举。 |
+| `label` | string 或 null | 调用方定义的开放标签。未设置时为 null。 |
 | `source` | string[] | 来源标识。未设置时为 `[]`。 |
 | `metadata` | object | 调用方扩展信息。未设置时为 `{}`。 |
 | `state` | string | `active`、`superseded` 或 `invalid`。 |
@@ -115,6 +115,8 @@ dsh-memory-note <subcommand> '<request-json>'
 
 Response 不得因空值省略上述字段。
 
+`kind` 语义：`fact` 是值得跨会话记住并注入上下文的长期结论——事实、用户偏好、决策、约束或约定；`note` 是临时注记（日志、中间想法、随手记），按需读取、永不注入。具体注入行为在适配层（§10）实现，不在 Go 中。`label` 是自由标签，参与精确过滤与词法检索，但不驱动生命周期或注入。
+
 ### 4.2 Memory input
 
 create 和 supersede 的新内容使用相同字段：
@@ -122,12 +124,12 @@ create 和 supersede 的新内容使用相同字段：
 | 字段 | 必填 | 规则 |
 |---|---:|---|
 | `content` | 是 | 保存原文；去除首尾空白后不能为空；最大 64 KiB。 |
-| `type` | 否 | trim 后保存；空字符串表示未设置；最大 128 bytes。 |
-| `scope` | 否 | trim 后保存；空字符串表示未设置；最大 256 bytes。 |
+| `kind` | 是 | `fact` 或 `note` 之一；其他值返回 `invalid_request`。 |
+| `label` | 否 | trim 后保存；空字符串表示未设置；最大 256 bytes。 |
 | `source` | 否 | trim、去空、去重并保序；最多 64 项，每项最大 512 bytes。 |
 | `metadata` | 否 | 任意 JSON object；按紧凑序列化（无多余空白）计最大 16 KiB；嵌套深度最大 32 层。 |
 
-Go 不解释 type、scope、source 或 metadata 的自然语言含义。
+Go 校验 kind 为枚举；不解释 label、source 或 metadata 的自然语言含义。
 
 ### 4.3 Mutation reason
 
@@ -282,8 +284,8 @@ Request：
   "workspace_id": 1,
   "query": "database sqlite",
   "filter": {
-    "types": ["decision"],
-    "scopes": ["storage"],
+    "kinds": ["fact"],
+    "labels": ["storage"],
     "created_after": "2026-01-01T00:00:00+08:00",
     "created_before": "2026-12-31T23:59:59+08:00",
     "updated_after": "2026-01-01T00:00:00+08:00",
@@ -302,17 +304,17 @@ Request：
 
 filter 规则：
 
-- `types` 与 `scopes` 是两个相互独立的调用方自定义维度，Go 不解释其含义；
-- `types` 精确匹配 memory 的 `type`，`scopes` 精确匹配 memory 的 `scope`；
+- `kinds` 与 `labels` 是两个相互独立的维度；
+- `kinds` 精确匹配 memory 的 `kind`（取值为受控枚举），`labels` 精确匹配 memory 的 `label`；
 - 匹配是对 trim 后存储值的精确相等比较，大小写敏感；
 - 同一维度内多个值是 OR；两个维度之间是 AND；filter 与 query 之间是 AND；
-- `type` 为 null 的记忆不会命中任何非空 `types` 过滤；`scope` 同理。
+- `label` 为 null 的记忆不会命中任何非空 `labels` 过滤；每条记忆都有 `kind`，故 `kinds` 总是针对具体值命中或未命中。
 
 query 规则：
 
 1. 按连续 Unicode letter/number（类别 L\* 与 N\*）切分关键词；不做 Unicode 归一化；
 2. 大小写不敏感仅作用于 ASCII（A–Z ↔ a–z）；其余字符按字节精确比较；
-3. 关键词在 content、type、scope 中做 substring match；
+3. 关键词在 content、kind、label 中做 substring match；
 4. 命中任意关键词即可；
 5. score 为命中关键词数除以关键词总数；没有 query 时 score 固定为 0；
 6. 按 `score DESC, updated_at DESC, memory_id ASC` 排序（`memory_id` 按 UTF-8 byte 序比较），再应用 limit。
@@ -324,8 +326,8 @@ Response data：
   "memories": [
     {
       "memory_id": "mem_...",
-      "type": "decision",
-      "scope": "storage",
+      "kind": "fact",
+      "label": "storage",
       "version": 2,
       "snippet": "Use SQLite in WAL mode.",
       "score": 1,
@@ -335,7 +337,7 @@ Response data：
 }
 ```
 
-SearchHit 的 type/scope 未设置时为 null。snippet 取 content 开头最多 240 bytes，若截断则停在 UTF-8 编码边界（不产生半个字符）。无结果返回空数组。
+SearchHit 的 label 未设置时为 null；kind 恒存在。snippet 取 content 开头最多 240 bytes，若截断则停在 UTF-8 编码边界（不产生半个字符）。无结果返回空数组。
 
 ### 7.2 `memory-get`
 
@@ -352,7 +354,7 @@ Request：
 Response data：
 
 ```json
-{"memory": {"memory_id": "mem_...", "workspace_id": 1, "content": "Use SQLite.", "type": null, "scope": null, "source": [], "metadata": {}, "state": "active", "version": 1, "supersedes": null, "superseded_by": null, "created_at": "2026-08-21T01:02:03+08:00", "updated_at": "2026-08-21T01:02:03+08:00"}}
+{"memory": {"memory_id": "mem_...", "workspace_id": 1, "content": "Use SQLite.", "kind": "note", "label": null, "source": [], "metadata": {}, "state": "active", "version": 1, "supersedes": null, "superseded_by": null, "created_at": "2026-08-21T01:02:03+08:00", "updated_at": "2026-08-21T01:02:03+08:00"}}
 ```
 
 可以读取任意 state。不存在返回 `memory_not_found`。
@@ -381,8 +383,8 @@ Response data：
   "memories": [
     {
       "memory_id": "mem_...",
-      "type": "decision",
-      "scope": null,
+      "kind": "fact",
+      "label": null,
       "state": "active",
       "version": 2,
       "supersedes": null,
@@ -395,7 +397,7 @@ Response data：
 }
 ```
 
-type/scope/supersedes/superseded_by 未设置时为 null。
+label/supersedes/superseded_by 未设置时为 null；kind 恒存在。
 
 ### 7.4 `memory-create`
 
@@ -405,8 +407,8 @@ Request：
 {
   "workspace_id": 1,
   "content": "Use SQLite.",
-  "type": "decision",
-  "scope": "storage",
+  "kind": "fact",
+  "label": "storage",
   "source": ["conversation:123"],
   "metadata": {"reason": "local-first"},
   "reason": "chosen for local-first storage"
@@ -427,8 +429,8 @@ Request：
   "memory_id": "mem_...",
   "expected_version": 1,
   "content": "Use SQLite in WAL mode.",
-  "type": "decision",
-  "scope": "storage",
+  "kind": "fact",
+  "label": "storage",
   "source": ["conversation:456"],
   "metadata": {"reason": "better concurrency"},
   "reason": "WAL mode improves concurrent access"
@@ -437,9 +439,9 @@ Request：
 
 - `workspace_id`、`memory_id`、`expected_version` 必填；
 - `reason` 可选（规则见 §4.3）；
-- content/type/scope/source/metadata 至少出现一个；
+- content/kind/label/source/metadata 至少出现一个；
 - 字段缺失表示保持原值；
-- `type: ""` 或 `scope: ""` 表示清除；
+- `kind` 只能改为枚举内的另一值；`label: ""` 表示清除；
 - `source: []` 或 `metadata: {}` 表示清空；
 - 所有字段都是整体替换，不做 merge 或 append；
 - 目标必须为 active，版本必须匹配；
@@ -463,8 +465,8 @@ Request：
   "expected_version": 2,
   "new": {
     "content": "Use PostgreSQL.",
-    "type": "decision",
-    "scope": "storage"
+    "kind": "fact",
+    "label": "storage"
   }
 }
 ```

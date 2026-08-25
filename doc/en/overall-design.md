@@ -227,7 +227,7 @@ The eight public memory subcommands are:
 
 ### `memory-search`
 
-Retrieves candidate memories by query and filter. Filtering dimensions include keywords, type, scope, and time. It is a candidate retrieval operation, not a semantic decision that a memory is relevant or true.
+Retrieves candidate memories by query and filter. Filtering dimensions include keywords, kind, label, and time. It is a candidate retrieval operation, not a semantic decision that a memory is relevant or true.
 
 ### `memory-get`
 

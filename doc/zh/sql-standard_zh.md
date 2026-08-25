@@ -11,8 +11,8 @@
 - 所有 TEXT 比较与排序使用 BINARY collation（SQLite 默认）；协议中的 “`memory_id` 升序”即按 UTF-8 byte 序比较。
 - 数据库文件创建权限为 `0600`，目录创建权限为 `0700`。
 - 库标识：
-  - `meta.db`：`PRAGMA application_id = 0x44534D4D`（"DSMM"），`PRAGMA user_version = 3`；
-  - memory DB：`PRAGMA application_id = 0x44534D57`（"DSMW"），`PRAGMA user_version = 3`。
+  - `meta.db`：`PRAGMA application_id = 0x44534D4D`（"DSMM"），`PRAGMA user_version = 4`；
+  - memory DB：`PRAGMA application_id = 0x44534D57`（"DSMW"），`PRAGMA user_version = 4`。
 - 时间列：一律存为两个 INTEGER——epoch seconds（UTC 时刻）与 offset minutes（该时刻的 UTC 偏移，范围 -840..840）。SQL 内的比较、范围过滤与排序只使用 epoch seconds；对外输出格式由协议 §3 规定。
 - JSON 列（`source_json`、`metadata_json`）：一律使用紧凑序列化（无多余空白）存储，保证协议的长度上限与存储字节数一致。
 - 事务模型：memory 写命令在 memory DB 内使用单个写事务，`meta.db` 只承担短事务（mapping 校验、锁的获取/释放、workspace 表变更）。memory DB 写事务提交之后才释放 WID 锁并结束 meta 协调；若锁释放或收尾失败，命令返回 `internal_error`，但 memory 变更已生效；调用方按协议的 unknown 结果纪律处理（先读状态，再决定下一步）。
@@ -24,7 +24,7 @@
 ```sql
 CREATE TABLE meta_info (
   id INTEGER PRIMARY KEY CHECK (id = 1),
-  schema_version INTEGER NOT NULL CHECK (schema_version = 3),
+  schema_version INTEGER NOT NULL CHECK (schema_version = 4),
   cursor_key TEXT NOT NULL
 );
 
@@ -100,7 +100,7 @@ CREATE TABLE memory_info (
   id INTEGER PRIMARY KEY CHECK (id = 1),
   workspace_id INTEGER NOT NULL
     CHECK (workspace_id BETWEEN 1 AND 9007199254740991),
-  schema_version INTEGER NOT NULL CHECK (schema_version = 3)
+  schema_version INTEGER NOT NULL CHECK (schema_version = 4)
 );
 
 CREATE TABLE memories (
@@ -108,8 +108,8 @@ CREATE TABLE memories (
     CHECK (workspace_id BETWEEN 1 AND 9007199254740991),
   memory_id TEXT NOT NULL,
   content TEXT NOT NULL,
-  type TEXT,
-  scope TEXT,
+  kind TEXT NOT NULL CHECK (kind IN ('fact', 'note')),
+  label TEXT,
   source_json TEXT NOT NULL,
   metadata_json TEXT NOT NULL,
   state TEXT NOT NULL CHECK (state IN ('active', 'superseded', 'invalid')),
@@ -131,8 +131,8 @@ CREATE TABLE memory_history (
   version INTEGER NOT NULL,
   action TEXT NOT NULL CHECK (action IN ('update', 'supersede', 'invalidate')),
   content TEXT NOT NULL,
-  type TEXT,
-  scope TEXT,
+  kind TEXT NOT NULL CHECK (kind IN ('fact', 'note')),
+  label TEXT,
   source_json TEXT NOT NULL,
   metadata_json TEXT NOT NULL,
   state TEXT NOT NULL,
@@ -162,7 +162,7 @@ CREATE TABLE memory_events (
 CREATE INDEX memory_events_by_memory
   ON memory_events(workspace_id, memory_id, id);
 
-CREATE INDEX memories_search ON memories(state, type, scope, updated_at, memory_id);
+CREATE INDEX memories_search ON memories(state, kind, label, updated_at, memory_id);
 CREATE INDEX memories_list ON memories(workspace_id, updated_at, memory_id);
 ```
 
@@ -182,7 +182,7 @@ CREATE INDEX memories_list ON memories(workspace_id, updated_at, memory_id);
   1. SELECT 旧行（无行 → `memory_not_found`）；
   2. 旧 version 不匹配 → `version_conflict`；state 非 active → `invalid_memory_state`；
   3. INSERT 旧行到 `memory_history`（`action = 'update'`、`archived_at = now`）；
-  4. `UPDATE memories SET content = ?, type = ?, scope = ?, source_json = ?, metadata_json = ?, version = version + 1, updated_at = ?, updated_offset = ? WHERE workspace_id = ? AND memory_id = ? AND version = ?`。
+  4. `UPDATE memories SET content = ?, kind = ?, label = ?, source_json = ?, metadata_json = ?, version = version + 1, updated_at = ?, updated_offset = ? WHERE workspace_id = ? AND memory_id = ? AND version = ?`。
   事件：`action = 'update'`、`from_version` = 旧 version、`to_version` = 旧 version + 1、`reason` 来自请求。
 - supersede：
   1. SELECT 旧行并检查存在性、version、state（同 update）；
@@ -212,8 +212,8 @@ CREATE INDEX memories_list ON memories(workspace_id, updated_at, memory_id);
 
 - get：`SELECT ... FROM memories WHERE workspace_id = ? AND memory_id = ?`；任意 state。带 `version` 参数时：若该版本等于当前行 version，直接返回当前行；否则 `SELECT ... FROM memory_history WHERE workspace_id = ? AND memory_id = ? AND version = ?`；无行 → `memory_not_found`。
 - history：从两张表拼装版本列表——当前版本取 `SELECT version, action, state, updated_at, updated_offset FROM memories WHERE workspace_id = ? AND memory_id = ?`（其 `action` 为最新事件的 action，`archived_at` 为 NULL），历史版本取 `SELECT version, action, state, updated_at, updated_offset, archived_at FROM memory_history WHERE workspace_id = ? AND memory_id = ? ORDER BY version ASC`——按 `version` 升序合并。归档行的 `action` 是归档该行的操作，也就是产生*下一个*版本的操作；因此拼装后的列表中，版本 1 的 action 恒为 `create`，其后每个版本的 action 取前一个归档行的 action。
-- diff：读取两个请求的版本（当前行或历史行，同上）并在应用层比较 content/type/scope/source_json/metadata_json/state，只返回发生变化的字段。
-- search：检索语句为 `SELECT ... FROM memories WHERE workspace_id = ? AND state = 'active' ORDER BY updated_at DESC, memory_id ASC`；时间范围、`type`/`scope` 精确过滤、关键词子串匹配与 score 全部由应用层按协议 §7.1 的确定算法在这些返回行上计算（过滤条件不下推 SQL 也不改变结果集合的语义；`type IS NULL` 的行不命中任何非空 `types` 过滤）。
+- diff：读取两个请求的版本（当前行或历史行，同上）并在应用层比较 content/kind/label/source_json/metadata_json/state，只返回发生变化的字段。
+- search：检索语句为 `SELECT ... FROM memories WHERE workspace_id = ? AND state = 'active' ORDER BY updated_at DESC, memory_id ASC`；时间范围、`kind`/`label` 精确过滤、关键词子串匹配与 score 全部由应用层按协议 §7.1 的确定算法在这些返回行上计算（过滤条件不下推 SQL 也不改变结果集合的语义；`label IS NULL` 的行不命中任何非空 `labels` 过滤）。
 - list：keyset 分页。首页：`SELECT ... FROM memories WHERE workspace_id = ? ORDER BY updated_at DESC, memory_id ASC LIMIT ?`；后续页：`SELECT ... FROM memories WHERE workspace_id = ? AND (updated_at < ? OR (updated_at = ? AND memory_id > ?)) ORDER BY updated_at DESC, memory_id ASC LIMIT ?`。每次取 `limit + 1` 行判断是否还有下一页；cursor 编码上一页最后一行的 `(updated_at, memory_id)`，为 opaque 字符串。cursor 载荷用 `meta_info.cursor_key` 作为密钥做 HMAC-SHA256 认证；无法解码或 HMAC 校验不通过的 cursor 返回 `invalid_request`，调用方无法伪造 cursor 来改变分页起点。
 
 ### 3.5 文件删除
@@ -224,7 +224,7 @@ CREATE INDEX memories_list ON memories(workspace_id, updated_at, memory_id);
 
 - `meta.db` 与 memory DB 路径必须是 regular file 且非 symlink，否则分别返回 `home_broken` / `workspace_broken`。
 - `PRAGMA application_id` 与 `PRAGMA user_version` 必须匹配 §1 的标识：application_id 错误 → `home_broken` / `workspace_broken`；user_version 不受支持 → `schema_mismatch`。
-- 表头行必须存在：`meta_info` 的 `schema_version = 3`，且其 `cursor_key` 必须是合法的 32 字节十六进制值；memory DB 的 `memory_info` 中 `workspace_id` 必须与本次打开的 WID 一致且 `schema_version = 3`。
+- 表头行必须存在：`meta_info` 的 `schema_version = 4`，且其 `cursor_key` 必须是合法的 32 字节十六进制值；memory DB 的 `memory_info` 中 `workspace_id` 必须与本次打开的 WID 一致且 `schema_version = 4`。
 - `memory/` 目录内每个条目都必须是 regular file 且非 symlink，名字符合 `workspace-{十进制WID}-memory.db`、`-wal`、`-shm` 模式；出现任何其他条目 → `workspace_broken`。名字符合模式但 WID 未注册的文件属于 `workspace-delete` 留下的残留，不视为异常，也永远不会被打开。
 - 不要求每次打开运行 `PRAGMA integrity_check`；检测到损坏时按 `workspace_broken` / `home_broken` 报告，绝不静默重建或清空数据。`workspace-delete` 是清理半损坏 workspace 的唯一通道。
 

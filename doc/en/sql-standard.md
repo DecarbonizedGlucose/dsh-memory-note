@@ -11,8 +11,8 @@ Scope: `meta.db` under HOME, and each `workspace-{WID}-memory.db` under `memory/
 - All TEXT comparison and sorting use BINARY collation (the SQLite default); the protocol's "`memory_id` ascending" ordering is comparison by UTF-8 byte order.
 - Database files are created with mode `0600` and directories with mode `0700`.
 - Database identifiers:
-  - `meta.db`: `PRAGMA application_id = 0x44534D4D` ("DSMM"), `PRAGMA user_version = 3`;
-  - memory DB: `PRAGMA application_id = 0x44534D57` ("DSMW"), `PRAGMA user_version = 3`.
+  - `meta.db`: `PRAGMA application_id = 0x44534D4D` ("DSMM"), `PRAGMA user_version = 4`;
+  - memory DB: `PRAGMA application_id = 0x44534D57` ("DSMW"), `PRAGMA user_version = 4`.
 - Time columns: always stored as two INTEGERs — epoch seconds (the UTC instant) and offset minutes (the UTC offset at that instant, range -840..840). Comparison, range filtering, and ordering inside SQL use only epoch seconds; the external output format is defined by protocol §3.
 - JSON columns (`source_json`, `metadata_json`): always stored in compact serialization (no extra whitespace), so that the protocol's length limits match the stored byte count.
 - Transaction model: memory write commands use a single write transaction inside the memory DB; `meta.db` carries only short transactions (mapping validation, lock acquire/release, workspace-table changes). The WID lock is released and meta coordination ends only after the memory DB write transaction commits; if the lock release or teardown fails, the command returns `internal_error`, but the memory changes have already taken effect; callers follow the protocol's unknown-result discipline (read state first, then decide the next step).
@@ -24,7 +24,7 @@ Scope: `meta.db` under HOME, and each `workspace-{WID}-memory.db` under `memory/
 ```sql
 CREATE TABLE meta_info (
   id INTEGER PRIMARY KEY CHECK (id = 1),
-  schema_version INTEGER NOT NULL CHECK (schema_version = 3),
+  schema_version INTEGER NOT NULL CHECK (schema_version = 4),
   cursor_key TEXT NOT NULL
 );
 
@@ -100,7 +100,7 @@ CREATE TABLE memory_info (
   id INTEGER PRIMARY KEY CHECK (id = 1),
   workspace_id INTEGER NOT NULL
     CHECK (workspace_id BETWEEN 1 AND 9007199254740991),
-  schema_version INTEGER NOT NULL CHECK (schema_version = 3)
+  schema_version INTEGER NOT NULL CHECK (schema_version = 4)
 );
 
 CREATE TABLE memories (
@@ -108,8 +108,8 @@ CREATE TABLE memories (
     CHECK (workspace_id BETWEEN 1 AND 9007199254740991),
   memory_id TEXT NOT NULL,
   content TEXT NOT NULL,
-  type TEXT,
-  scope TEXT,
+  kind TEXT NOT NULL CHECK (kind IN ('fact', 'note')),
+  label TEXT,
   source_json TEXT NOT NULL,
   metadata_json TEXT NOT NULL,
   state TEXT NOT NULL CHECK (state IN ('active', 'superseded', 'invalid')),
@@ -131,8 +131,8 @@ CREATE TABLE memory_history (
   version INTEGER NOT NULL,
   action TEXT NOT NULL CHECK (action IN ('update', 'supersede', 'invalidate')),
   content TEXT NOT NULL,
-  type TEXT,
-  scope TEXT,
+  kind TEXT NOT NULL CHECK (kind IN ('fact', 'note')),
+  label TEXT,
   source_json TEXT NOT NULL,
   metadata_json TEXT NOT NULL,
   state TEXT NOT NULL,
@@ -162,7 +162,7 @@ CREATE TABLE memory_events (
 CREATE INDEX memory_events_by_memory
   ON memory_events(workspace_id, memory_id, id);
 
-CREATE INDEX memories_search ON memories(state, type, scope, updated_at, memory_id);
+CREATE INDEX memories_search ON memories(state, kind, label, updated_at, memory_id);
 CREATE INDEX memories_list ON memories(workspace_id, updated_at, memory_id);
 ```
 
@@ -182,7 +182,7 @@ All write commands complete within a single memory DB write transaction, checkin
   1. SELECT the old row (no row → `memory_not_found`);
   2. old version mismatch → `version_conflict`; state not active → `invalid_memory_state`;
   3. INSERT the old row into `memory_history` (`action = 'update'`, `archived_at = now`);
-  4. `UPDATE memories SET content = ?, type = ?, scope = ?, source_json = ?, metadata_json = ?, version = version + 1, updated_at = ?, updated_offset = ? WHERE workspace_id = ? AND memory_id = ? AND version = ?`.
+  4. `UPDATE memories SET content = ?, kind = ?, label = ?, source_json = ?, metadata_json = ?, version = version + 1, updated_at = ?, updated_offset = ? WHERE workspace_id = ? AND memory_id = ? AND version = ?`.
   Event: `action = 'update'`, `from_version` = old version, `to_version` = old version + 1, `reason` from the request.
 - supersede:
   1. SELECT the old row and check existence, version, and state (as in update);
@@ -212,8 +212,8 @@ A **rollback** has no dedicated statement: it is a normal `update` whose content
 
 - get: `SELECT ... FROM memories WHERE workspace_id = ? AND memory_id = ?`; any state. With a `version` argument: if the version equals the current row's version, return the current row; otherwise `SELECT ... FROM memory_history WHERE workspace_id = ? AND memory_id = ? AND version = ?`; no row → `memory_not_found`.
 - history: assemble the version list from both tables — `SELECT version, action, state, updated_at, updated_offset FROM memories WHERE workspace_id = ? AND memory_id = ?` for the current version (its `action` is the latest event's action, `archived_at` is NULL) plus `SELECT version, action, state, updated_at, updated_offset, archived_at FROM memory_history WHERE workspace_id = ? AND memory_id = ? ORDER BY version ASC` — merged in ascending `version` order. An archive row's `action` is the operation that archived it, which is the operation that produced the *next* version; so in the assembled list, version 1's action is always `create`, and each later version's action is the previous archive row's action.
-- diff: read the two requested versions (current row or history rows as above) and compare `content`/`type`/`scope`/`source_json`/`metadata_json`/`state` in the application layer; only differing fields are returned.
-- search: the retrieval statement is `SELECT ... FROM memories WHERE workspace_id = ? AND state = 'active' ORDER BY updated_at DESC, memory_id ASC`; time ranges, `type`/`scope` exact filters, keyword substring matching, and score are all computed by the application layer over these returned rows using the deterministic algorithm from protocol §7.1 (filters are not pushed down into SQL and do not change the result set's semantics; rows with `type IS NULL` do not match any non-empty `types` filter).
+- diff: read the two requested versions (current row or history rows as above) and compare `content`/`kind`/`label`/`source_json`/`metadata_json`/`state` in the application layer; only differing fields are returned.
+- search: the retrieval statement is `SELECT ... FROM memories WHERE workspace_id = ? AND state = 'active' ORDER BY updated_at DESC, memory_id ASC`; time ranges, `kind`/`label` exact filters, keyword substring matching, and score are all computed by the application layer over these returned rows using the deterministic algorithm from protocol §7.1 (filters are not pushed down into SQL and do not change the result set's semantics; rows with `label IS NULL` do not match any non-empty `labels` filter).
 - list: keyset pagination. First page: `SELECT ... FROM memories WHERE workspace_id = ? ORDER BY updated_at DESC, memory_id ASC LIMIT ?`; subsequent pages: `SELECT ... FROM memories WHERE workspace_id = ? AND (updated_at < ? OR (updated_at = ? AND memory_id > ?)) ORDER BY updated_at DESC, memory_id ASC LIMIT ?`. Fetch `limit + 1` rows each time to determine whether another page follows; the cursor encodes the previous page's last-row `(updated_at, memory_id)` and is an opaque string. The cursor payload is authenticated with HMAC-SHA256 keyed by `meta_info.cursor_key`; a cursor that cannot be decoded or whose HMAC does not verify returns `invalid_request`, so a caller cannot forge a cursor to change the pagination starting point.
 
 ### 3.5 File deletion
@@ -224,7 +224,7 @@ After the meta transaction commits, `workspace-delete` removes `workspace-{WID}-
 
 - The `meta.db` and memory DB paths must be regular files and not symlinks, otherwise return `home_broken` / `workspace_broken` respectively.
 - `PRAGMA application_id` and `PRAGMA user_version` must match the §1 identifiers: a wrong application_id → `home_broken` / `workspace_broken`; an unsupported user_version → `schema_mismatch`.
-- The header row must exist: `meta_info`'s `schema_version = 3` and its `cursor_key` must be a valid 32-byte hex value; in the memory DB's `memory_info`, `workspace_id` must match the WID being opened and `schema_version = 3`.
+- The header row must exist: `meta_info`'s `schema_version = 4` and its `cursor_key` must be a valid 32-byte hex value; in the memory DB's `memory_info`, `workspace_id` must match the WID being opened and `schema_version = 4`.
 - Every entry in the `memory/` directory must be a regular file, not a symlink, with a name matching the `workspace-{decimal WID}-memory.db`, `-wal`, or `-shm` pattern; any other entry → `workspace_broken`. Files whose names match the pattern but whose WID is unregistered are leftovers from `workspace-delete`; they are not treated as anomalies and are never opened.
 - Running `PRAGMA integrity_check` on every open is not required; when corruption is detected, report it as `workspace_broken` / `home_broken` and never silently rebuild or clear data. `workspace-delete` is the only channel for cleaning up a half-corrupted workspace.
 
