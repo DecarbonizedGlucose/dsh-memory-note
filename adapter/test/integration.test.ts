@@ -54,7 +54,13 @@ test(
     apply(ctx, { binaryPath: binary, timeoutMs: 30_000, home });
 
     const exec = (cwd: string): ToolExecution =>
-      ({ callId: "call-1", name: "", arguments: {}, agent: { header: { cwd } }, signal: new AbortController().signal }) as unknown as ToolExecution;
+      ({
+        callId: "call-1",
+        name: "",
+        arguments: {},
+        agent: { session: { header: { cwd } } },
+        signal: new AbortController().signal,
+      }) as unknown as ToolExecution;
     const byName = (name: string): RegisteredTool => {
       const tool = tools.find((candidate) => candidate.name === name);
       assert.ok(tool, `tool ${name} registered`);
