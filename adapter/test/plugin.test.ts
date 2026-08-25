@@ -109,8 +109,8 @@ test("tool renders are human summaries, not raw protocol JSON", () => {
       memory_id: "mem_x",
       workspace_id: 7,
       content: "Use SQLite.",
-      type: null,
-      scope: null,
+      kind: "note",
+      label: null,
       source: [],
       metadata: {},
       state: "active",
@@ -137,8 +137,8 @@ test("UI cards hide protocol handles from humans", () => {
     memory: {
       memory_id: "mem_95f5644050f649e52cae4c94a08730f6",
       content: "Use SQLite.",
-      type: "decision",
-      scope: null,
+      kind: "fact",
+      label: null,
       state: "active",
       version: 1,
     },
@@ -147,7 +147,7 @@ test("UI cards hide protocol handles from humans", () => {
   // must never carry ids, versions, or other protocol fields.
   const meta = create.output.presentationMeta({}, value) as { text: string };
   assert.match(meta.text, /Use SQLite/);
-  assert.match(meta.text, /decision/);
+  assert.match(meta.text, /结论/);
   assert.doesNotMatch(meta.text, /mem_|version|state|workspace_id/);
 });
 
@@ -173,7 +173,7 @@ test("write tools ask approval once and pass the resolved workspace_id", async (
   const { approval, tools, calls } = makeContext();
   const create = tools.find((tool) => tool.name === "memory_create");
   assert.ok(create);
-  const value = await create.execute({ content: "Use SQLite." }, fakeExec(workspacePath));
+  const value = await create.execute({ content: "Use SQLite.", kind: "fact" }, fakeExec(workspacePath));
   assert.equal((value as { memory: { workspace_id: number } }).memory.workspace_id, 7);
   assert.equal(approval.asked.length, 1);
   assert.equal(approval.asked[0]?.toolName, "memory_create");
@@ -193,7 +193,7 @@ test("supersede approval identifies the memory by content, never by id", async (
   const supersede = tools.find((tool) => tool.name === "memory_supersede");
   assert.ok(supersede);
   await supersede.execute(
-    { memory_id: "mem_old", expected_version: 1, new: { content: "Use PostgreSQL." } },
+    { memory_id: "mem_old", expected_version: 1, new: { content: "Use PostgreSQL.", kind: "fact" } },
     fakeExec(workspacePath),
   );
   const reason = approval.asked[0]?.reason ?? "";
@@ -206,7 +206,7 @@ test("denied approval fails the write before spawning it", async () => {
   const { approval, tools, calls } = makeContext("scripted", "rejected");
   const create = tools.find((tool) => tool.name === "memory_create");
   assert.ok(create);
-  await assert.rejects(create.execute({ content: "blocked" }, fakeExec(workspacePath)), /not granted/);
+  await assert.rejects(create.execute({ content: "blocked", kind: "note" }, fakeExec(workspacePath)), /not granted/);
   assert.equal(approval.asked.length, 1);
   const writes = calls().filter((entry) => entry.subcommand !== "workspace-resolve");
   assert.equal(writes.length, 0);
@@ -216,7 +216,7 @@ test("write without agent context fails closed", async () => {
   const { tools } = makeContext();
   const create = tools.find((tool) => tool.name === "memory_create");
   assert.ok(create);
-  await assert.rejects(create.execute({ content: "x" }, fakeExec()), /no session cwd/);
+  await assert.rejects(create.execute({ content: "x", kind: "note" }, fakeExec()), /no session cwd/);
 });
 
 test("unregistered agent cwd fails with guidance", async () => {

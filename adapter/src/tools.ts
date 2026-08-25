@@ -60,8 +60,12 @@ const expectedVersion: ParamSpec = {
 
 const memoryInputParams: Record<string, ParamSpec> = {
   content: { type: "string", required: true, description: "The fact to remember." },
-  type: { type: "string", description: "Caller-defined category; empty means unset." },
-  scope: { type: "string", description: "Caller-defined scope; empty means unset." },
+  kind: {
+    type: "string",
+    required: true,
+    description: "The memory's track: fact (a durable conclusion) or note (a transient note).",
+  },
+  label: { type: "string", description: "An open caller-defined tag; empty means unset." },
   source: { type: "array", items: { type: "string" }, description: "Source identifiers." },
   metadata: {
     type: "object",
@@ -74,14 +78,14 @@ const memoryInput: ParamSpec = {
   type: "object",
   properties: memoryInputParams,
   additionalProperties: false,
-  description: "Memory content and metadata.",
+  description: "Memory content, track, and metadata.",
 };
 
 const searchFilter: ParamSpec = {
   type: "object",
   properties: {
-    types: { type: "array", items: { type: "string" }, description: "Exact type matches (OR)." },
-    scopes: { type: "array", items: { type: "string" }, description: "Exact scope matches (OR)." },
+    kinds: { type: "array", items: { type: "string" }, description: "Exact kind matches (OR)." },
+    labels: { type: "array", items: { type: "string" }, description: "Exact label matches (OR)." },
     created_after: { type: "string", description: "RFC 3339 lower bound, inclusive." },
     created_before: { type: "string", description: "RFC 3339 upper bound, inclusive." },
     updated_after: { type: "string", description: "RFC 3339 lower bound, inclusive." },
@@ -130,8 +134,12 @@ export const parameterSpecs: Record<string, Record<string, ParamSpec>> = {
   "memory-create": {
     workspace_id: workspaceId,
     content: { type: "string", required: true, description: "The fact to remember." },
-    type: { type: "string", description: "Caller-defined category." },
-    scope: { type: "string", description: "Caller-defined scope." },
+    kind: {
+      type: "string",
+      required: true,
+      description: "The memory's track: fact (a durable conclusion) or note (a transient note).",
+    },
+    label: { type: "string", description: "An open caller-defined tag." },
     source: { type: "array", items: { type: "string" }, description: "Source identifiers." },
     metadata: {
       type: "object",
@@ -145,8 +153,8 @@ export const parameterSpecs: Record<string, Record<string, ParamSpec>> = {
     memory_id: memoryId,
     expected_version: expectedVersion,
     content: { type: "string", description: "Whole replacement of the content." },
-    type: { type: "string", description: 'Whole replacement; "" clears.' },
-    scope: { type: "string", description: 'Whole replacement; "" clears.' },
+    kind: { type: "string", description: "Whole replacement; one of fact or note." },
+    label: { type: "string", description: 'Whole replacement; "" clears.' },
     source: { type: "array", items: { type: "string" }, description: "Whole replacement; [] clears." },
     metadata: {
       type: "object",
@@ -276,6 +284,11 @@ const ACTION_LABELS: Record<string, string> = {
   invalidate: "失效",
 };
 
+const KIND_LABELS: Record<string, string> = {
+  fact: "结论",
+  note: "注记",
+};
+
 const ERROR_LABELS: Record<string, string> = {
   workspace_busy: "该工作区正被其他进程占用，请稍后重试",
   workspace_not_found: "工作区未注册",
@@ -303,8 +316,8 @@ function formatDate(value: unknown): string {
 function renderMemory(memory: Record<string, JsonValue>): string {
   let text = `记忆 ${String(memory.memory_id ?? "")}（${STATE_LABELS[String(memory.state ?? "")] ?? String(memory.state ?? "")}，版本 ${memory.version ?? ""}）`;
   if (typeof memory.content === "string") text += `\n内容：${memory.content}`;
-  if (typeof memory.type === "string" && memory.type !== "") text += `\n分类：${memory.type}`;
-  if (typeof memory.scope === "string" && memory.scope !== "") text += `\n范围：${memory.scope}`;
+  if (typeof memory.kind === "string" && memory.kind !== "") text += `\n分轨：${KIND_LABELS[memory.kind] ?? memory.kind}`;
+  if (typeof memory.label === "string" && memory.label !== "") text += `\n标签：${memory.label}`;
   if (Array.isArray(memory.source) && memory.source.length > 0) text += `\n来源：${memory.source.join(", ")}`;
   if (typeof memory.supersedes_content === "string" && memory.supersedes_content !== "") {
     text += `\n取代了更早的记忆：「${memory.supersedes_content}」`;
@@ -348,8 +361,8 @@ const renderers: Record<string, Renderer> = {
     const lines = hits.map((hit) =>
       [
         `- ${hit.memory_id} 得分 ${hit.score ?? ""} 版本 ${hit.version ?? ""}`,
-        hit.type ? ` 分类 ${hit.type}` : "",
-        hit.scope ? ` 范围 ${hit.scope}` : "",
+        typeof hit.kind === "string" ? ` 分轨 ${KIND_LABELS[hit.kind] ?? hit.kind}` : "",
+        hit.label ? ` 标签 ${hit.label}` : "",
         `\n  ${hit.snippet ?? ""}`,
       ].join(""),
     );
@@ -360,8 +373,8 @@ const renderers: Record<string, Renderer> = {
     const lines = items.map((item) =>
       [
         `- ${item.memory_id} ${STATE_LABELS[String(item.state ?? "")] ?? String(item.state ?? "")} 版本 ${item.version ?? ""}`,
-        item.type ? ` 分类 ${item.type}` : "",
-        item.scope ? ` 范围 ${item.scope}` : "",
+        typeof item.kind === "string" ? ` 分轨 ${KIND_LABELS[item.kind] ?? item.kind}` : "",
+        item.label ? ` 标签 ${item.label}` : "",
       ].join(""),
     );
     return [{ type: "text", text: lines.length > 0 ? lines.join("\n") : "该工作区没有记忆" }];
@@ -419,8 +432,8 @@ const renderers: Record<string, Renderer> = {
 function cleanMemoryText(memory: Record<string, JsonValue>): string {
   const content = typeof memory.content === "string" ? memory.content : "";
   const tags: string[] = [];
-  if (typeof memory.type === "string" && memory.type !== "") tags.push(memory.type);
-  if (typeof memory.scope === "string" && memory.scope !== "") tags.push(memory.scope);
+  if (typeof memory.kind === "string" && memory.kind !== "") tags.push(KIND_LABELS[memory.kind] ?? memory.kind);
+  if (typeof memory.label === "string" && memory.label !== "") tags.push(memory.label);
   return tags.length > 0 ? `${content}\n[${tags.join(" · ")}]` : content;
 }
 
@@ -692,8 +705,8 @@ async function describeApproval(
       const previous = await currentContent(request, exec, config);
       const parts: string[] = [];
       if (typeof request.content === "string") parts.push(`内容改为「${short(request.content)}」`);
-      if (request.type !== undefined) parts.push(`分类${text(request.type) === "" ? "清除" : `改为「${text(request.type)}」`}`);
-      if (request.scope !== undefined) parts.push(`范围${text(request.scope) === "" ? "清除" : `改为「${text(request.scope)}」`}`);
+      if (request.kind !== undefined) parts.push(`分轨改为「${text(request.kind)}」`);
+      if (request.label !== undefined) parts.push(`标签${text(request.label) === "" ? "清除" : `改为「${text(request.label)}」`}`);
       if (request.source !== undefined) parts.push("来源已更新");
       if (request.metadata !== undefined) parts.push("元数据已更新");
       return `更新记忆「${short(previous)}」：${parts.join("，")}`;

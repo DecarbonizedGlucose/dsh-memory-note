@@ -68,7 +68,7 @@ test(
     assert.equal((registered as { created: boolean }).created, true);
 
     const created = await byName("memory_create").execute(
-      { content: "Use SQLite for local storage.", type: "decision" },
+      { content: "Use SQLite for local storage.", kind: "fact" },
       exec(workspace),
     );
     const memory = (created as { memory: { memory_id: string; version: number } }).memory;
