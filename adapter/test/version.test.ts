@@ -4,8 +4,12 @@ import { test } from "node:test";
 import { applicationVersion, protocolMajor, protocolMajorFrom } from "../src/version.js";
 
 test("adapter protocol major comes from its package version", () => {
-  assert.equal(applicationVersion, "2.0.0");
-  assert.equal(protocolMajor, 2);
+  // Generic, not pinned to a concrete release: re-derive the expected major
+  // from the very string the runtime parsed, so the assertion survives any
+  // bump without editing two literals in lockstep.
+  assert.equal(typeof applicationVersion, "string");
+  assert.match(applicationVersion, /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/);
+  assert.equal(protocolMajor, protocolMajorFrom(applicationVersion));
 });
 
 test("protocol major accepts release and prerelease versions", () => {

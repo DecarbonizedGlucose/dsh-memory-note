@@ -15,6 +15,7 @@ import type { ToolExecution } from "@deepseek-ai/dsh-tools";
 import { inject } from "../src/index.js";
 import { registerMemoryNoteTools } from "../src/tools.js";
 import type { MemoryNoteConfig } from "../src/tools.js";
+import { applicationVersion } from "../src/version.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const fakeScript = path.join(here, "fixtures", "fake-binary.mjs");
@@ -41,7 +42,7 @@ interface FakeApproval {
 function makeContext(
   mode = "scripted",
   outcome = "allowed-once",
-  version = "2.0.0",
+  version = applicationVersion,
 ): {
   ctx: Context;
   approval: FakeApproval;

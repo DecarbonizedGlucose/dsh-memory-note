@@ -2,7 +2,18 @@
 // Scripted stand-in for the Go binary used by unit tests. Executed directly
 // (shebang), so its argv (process.argv.slice(2)) is exactly
 // [subcommand, request-json] — the same argv shape the real binary receives.
-import { appendFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
+
+// The fallback core version mirrors the adapter package version, so the fake
+// always simulates a core whose protocol major matches this adapter by
+// default. FAKE_VERSION overrides it when a test wants a mismatched core.
+let packageVersion = "0.0.0";
+try {
+  packageVersion = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8")).version;
+} catch {
+  // decode errors fall back to a benign version; FAKE_VERSION still wins.
+}
+const defaultVersion = typeof packageVersion === "string" ? packageVersion : "0.0.0";
 
 const mode = process.env.FAKE_MODE ?? "ok";
 const args = process.argv.slice(2);
@@ -15,7 +26,7 @@ try {
 }
 
 if (subcommand === "version") {
-  writeFileSync(1, `${process.env.FAKE_VERSION ?? "2.0.0"}\n`);
+  writeFileSync(1, `${process.env.FAKE_VERSION ?? defaultVersion}\n`);
   process.exit(0);
 }
 
