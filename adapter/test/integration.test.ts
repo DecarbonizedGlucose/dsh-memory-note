@@ -80,8 +80,12 @@ test(
     const memory = (created as { memory: { memory_id: string; version: number } }).memory;
     assert.equal(memory.version, 1);
 
+    // §4: a search hit carries a citation for version-safe writes.
     const searched = await byName("memory_search").execute({ query: "sqlite" }, exec(workspace));
-    assert.equal((searched as { memories: unknown[] }).memories.length, 1);
+    const hits = (searched as { memories: Array<{ memory_id: string; citation: { memory_id: string; version: number } }> }).memories;
+    assert.equal(hits.length, 1);
+    assert.equal(hits[0].citation.version, 1);
+    assert.equal(hits[0].citation.memory_id, memory.memory_id);
 
     const listed = await byName("memory_list").execute({}, exec(workspace));
     assert.equal((listed as { memories: unknown[] }).memories.length, 1);
@@ -91,6 +95,16 @@ test(
       exec(workspace),
     );
     assert.equal((updated as { memory: { version: number } }).memory.version, 2);
+
+    // §1: version history and a version-aware read.
+    const history = await byName("memory_history").execute({ memory_id: memory.memory_id }, exec(workspace));
+    const versions = (history as { versions: Array<{ version: number }> }).versions;
+    assert.equal(versions.length, 2);
+    const historical = await byName("memory_get").execute(
+      { memory_id: memory.memory_id, version: 1 },
+      exec(workspace),
+    );
+    assert.equal((historical as { memory: { content: string } }).memory.content, "Use SQLite for local storage.");
 
     const deleted = await byName("workspace_delete").execute({}, exec(workspace));
     assert.equal((deleted as { deleted: boolean }).deleted, true);

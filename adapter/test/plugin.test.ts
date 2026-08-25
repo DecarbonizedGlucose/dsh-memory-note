@@ -143,6 +143,7 @@ test("search render carries the FTS rank and matched-term count", () => {
         kind: "fact",
         label: "storage",
         version: 2,
+        citation: { memory_id: "mem_x", version: 2 },
         snippet: "Use SQLite in WAL mode.",
         score: 0.000001,
         matched_terms: 2,
@@ -153,6 +154,29 @@ test("search render carries the FTS rank and matched-term count", () => {
   assert.match(text, /score 0\.000001/);
   assert.match(text, /matched terms 2/);
   assert.match(text, /Use SQLite in WAL mode/);
+  // Bounded rendering adds the trust notice and the citation handle.
+  assert.match(text, /untrusted memory history/);
+  assert.match(text, /cite mem_x@2/);
+});
+
+test("search render caps the number of memories to the budget", () => {
+  const { tools } = makeContext();
+  const search = tools.find((tool) => tool.name === "memory_search");
+  assert.ok(search?.output?.render);
+  const memories = Array.from({ length: 20 }, (_, index) => ({
+    memory_id: `mem_${index}`,
+    kind: "note",
+    label: null,
+    version: 1,
+    citation: { memory_id: `mem_${index}`, version: 1 },
+    snippet: `snippet ${index}`,
+    score: 0,
+    matched_terms: 0,
+    updated_at: "2026-01-01T00:00:00+00:00",
+  }));
+  const text = search.output.render({}, { memories })[0]?.text ?? "";
+  const renderedIds = (text.match(/- mem_\d+/g) ?? []).length;
+  assert.ok(renderedIds <= 8, `rendered ${renderedIds} memories, want <= 8`);
 });
 
 test("UI cards hide protocol handles from humans", () => {

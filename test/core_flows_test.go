@@ -251,3 +251,67 @@ func TestWorkspaceIdNotReused(t *testing.T) {
 		t.Fatalf("workspace id reused: %v", secondID)
 	}
 }
+
+// TestBranchFilterAcrossProcesses verifies branch-scoped memories filter out of
+// search across independent core processes.
+func TestBranchFilterAcrossProcesses(t *testing.T) {
+	binary := buildCore(t)
+	home := tmpHome(t)
+	workspace := t.TempDir()
+	mustRun(t, binary, home, "workspace-register", map[string]any{"path": workspace})
+
+	mustRun(t, binary, home, "memory-create", map[string]any{
+		"workspace_id": 1, "content": "branch main only", "kind": "note", "branches": []string{"main"},
+	})
+	mustRun(t, binary, home, "memory-create", map[string]any{
+		"workspace_id": 1, "content": "branch all", "kind": "note",
+	})
+
+	search := func(branch any) int {
+		request := map[string]any{"workspace_id": 1, "query": "branch"}
+		if branch != nil {
+			request["branch"] = branch
+		}
+		response := mustRun(t, binary, home, "memory-search", request)
+		return len(response.Data["memories"].([]any))
+	}
+	if got := search(nil); got != 2 {
+		t.Fatalf("no branch returned %d, want 2", got)
+	}
+	if got := search("main"); got != 2 {
+		t.Fatalf("branch=main returned %d, want 2", got)
+	}
+	if got := search("dev"); got != 1 {
+		t.Fatalf("branch=dev returned %d, want 1", got)
+	}
+}
+
+// TestMemoryHistoryAcrossProcesses verifies version history and version-aware
+// reads survive across independent core processes.
+func TestMemoryHistoryAcrossProcesses(t *testing.T) {
+	binary := buildCore(t)
+	home := tmpHome(t)
+	workspace := t.TempDir()
+	mustRun(t, binary, home, "workspace-register", map[string]any{"path": workspace})
+
+	created := mustRun(t, binary, home, "memory-create", map[string]any{
+		"workspace_id": 1, "content": "Use SQLite.", "kind": "note",
+	})
+	id := created.Data["memory"].(map[string]any)["memory_id"].(string)
+
+	mustRun(t, binary, home, "memory-update", map[string]any{
+		"workspace_id": 1, "memory_id": id, "expected_version": 1, "content": "Use SQLite in WAL mode.",
+	})
+
+	history := mustRun(t, binary, home, "memory-history", map[string]any{"workspace_id": 1, "memory_id": id})
+	if versions := history.Data["versions"].([]any); len(versions) != 2 {
+		t.Fatalf("history = %#v, want 2 versions", history)
+	}
+
+	historical := mustRun(t, binary, home, "memory-get", map[string]any{
+		"workspace_id": 1, "memory_id": id, "version": 1,
+	})
+	if historical.Data["memory"].(map[string]any)["content"] != "Use SQLite." {
+		t.Fatalf("historical read = %#v", historical)
+	}
+}

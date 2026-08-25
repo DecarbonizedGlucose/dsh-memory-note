@@ -63,6 +63,24 @@ values, including states and dates, are rendered in natural language.
 `memory_history` gives the model version numbers as handles for precise
 rollback reads, but user cards show only counts and content, never versions.
 
+## Bounded context rendering
+
+Model-facing renders are kept inside an explicit budget so a large search or a
+64 KiB memory never crowds out the live prompt:
+
+- at most 8 memories per search render, one memory's content truncated to
+  2000 UTF-8 bytes, and a whole search render to 16000 bytes (with an ellipsis
+  on a code-point boundary);
+- a `search` render is prefixed with a trust notice marking it as untrusted
+  history that never overrides the current request, instructions, or repository
+  rules;
+- each hit carries its `citation` (memory_id + version) as the handle for a
+  later version-safe write (§4).
+
+Git branch scoping: `memory_search` auto-detects the agent's current branch
+(`DSH_MEMORY_NOTE_GIT_BRANCH`, then `.git/HEAD`); a non-git or detached-HEAD
+workspace simply omits the branch and sees everything.
+
 ## Install
 
 From a local checkout:

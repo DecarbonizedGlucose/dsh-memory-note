@@ -12,6 +12,7 @@ import type { ApprovalOutcome } from "@deepseek-ai/dsh-user-approval";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { checkCoreVersion, CoreError, CoreErrorCode, runCore, type CoreOptions, type JsonValue } from "./core.js";
+import { boundTotal, RENDER_BUDGET, TRUST_NOTICE, truncateUtf8 } from "./render-bounds.js";
 import { protocolMajor } from "./version.js";
 
 export interface MemoryNoteConfig {
@@ -338,18 +339,18 @@ function formatDate(value: unknown): string {
 // expressed as the related memory's content, never as an id.
 function renderMemory(memory: Record<string, JsonValue>): string {
   let text = `memory ${String(memory.memory_id ?? "")} (${STATE_LABELS[String(memory.state ?? "")] ?? String(memory.state ?? "")}, version ${memory.version ?? ""})`;
-  if (typeof memory.content === "string") text += `\ncontent: ${memory.content}`;
+  if (typeof memory.content === "string") text += `\ncontent: ${truncateUtf8(memory.content, RENDER_BUDGET.maxItemBytes)}`;
   if (typeof memory.kind === "string" && memory.kind !== "") text += `\nkind: ${KIND_LABELS[memory.kind] ?? memory.kind}`;
   if (typeof memory.label === "string" && memory.label !== "") text += `\nlabel: ${memory.label}`;
   if (Array.isArray(memory.branches) && memory.branches.length > 0) text += `\nbranches: ${memory.branches.join(", ")}`;
   if (Array.isArray(memory.source) && memory.source.length > 0) text += `\nsource: ${memory.source.join(", ")}`;
   if (typeof memory.supersedes_content === "string" && memory.supersedes_content !== "") {
-    text += `\nsupersedes an earlier memory: "${memory.supersedes_content}"`;
+    text += `\nsupersedes an earlier memory: "${truncateUtf8(memory.supersedes_content, 200)}"`;
   } else if (typeof memory.supersedes === "string") {
     text += `\nsupersedes an earlier memory`;
   }
   if (typeof memory.superseded_by_content === "string" && memory.superseded_by_content !== "") {
-    text += `\nsuperseded by a newer memory: "${memory.superseded_by_content}"`;
+    text += `\nsuperseded by a newer memory: "${truncateUtf8(memory.superseded_by_content, 200)}"`;
   } else if (typeof memory.superseded_by === "string") {
     text += `\nsuperseded by a newer memory`;
   }
@@ -382,20 +383,23 @@ const renderers: Record<string, Renderer> = {
   "workspace-delete": () => [{ type: "text", text: "workspace deleted (mapping and memory database)" }],
   "memory-search": (_args, value) => {
     const hits = (value.memories as Array<Record<string, JsonValue>>) ?? [];
-    const lines = hits.map((hit) => {
+    const lines = hits.slice(0, RENDER_BUDGET.maxItems).map((hit) => {
       const citation = hit.citation as Record<string, JsonValue> | undefined;
       const cite =
         typeof citation?.memory_id === "string" && typeof citation?.version === "number"
           ? ` cite ${citation.memory_id}@${citation.version}`
           : "";
+      const snippet =
+        typeof hit.snippet === "string" ? truncateUtf8(hit.snippet, RENDER_BUDGET.maxItemBytes) : "";
       return [
         `- ${hit.memory_id} score ${hit.score ?? ""} matched terms ${hit.matched_terms ?? 0} version ${hit.version ?? ""}${cite}`,
         typeof hit.kind === "string" ? ` kind ${KIND_LABELS[hit.kind] ?? hit.kind}` : "",
         hit.label ? ` label ${hit.label}` : "",
-        `\n  ${hit.snippet ?? ""}`,
+        `\n  ${snippet}`,
       ].join("");
     });
-    return [{ type: "text", text: lines.length > 0 ? lines.join("\n") : "no matching memories" }];
+    if (lines.length === 0) return [{ type: "text", text: "no matching memories" }];
+    return [{ type: "text", text: `${TRUST_NOTICE}\n${boundTotal(lines, RENDER_BUDGET.maxTotalBytes)}` }];
   },
   "memory-list": (_args, value) => {
     const items = (value.memories as Array<Record<string, JsonValue>>) ?? [];
