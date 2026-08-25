@@ -88,7 +88,7 @@ if (mode === "usage") {
       respond({ memories: [] });
       break;
     case "memory-get":
-      respond({ memory: memory({ ...request, content: "旧记忆内容" }) });
+      respond({ memory: memory({ ...request, content: "old memory content" }) });
       break;
     default:
       respond({});

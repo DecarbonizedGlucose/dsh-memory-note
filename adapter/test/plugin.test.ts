@@ -123,12 +123,35 @@ test("tool renders are human summaries, not raw protocol JSON", () => {
       updated_at: "2026-01-01T00:00:00+00:00",
     },
   })[0]?.text ?? "";
-  assert.match(text, /记忆 mem_x/);
+  assert.match(text, /memory mem_x/);
   assert.match(text, /Use SQLite/);
   // State and dates are natural language; protocol field names stay out.
-  assert.match(text, /生效中/);
-  assert.match(text, /创建于 2026-01-01 00:00/);
+  assert.match(text, /active/);
+  assert.match(text, /created 2026-01-01 00:00/);
   assert.doesNotMatch(text, /workspace_id|created_at|metadata|"state"|"active"/);
+});
+
+test("search render carries the FTS rank and matched-term count", () => {
+  const { tools } = makeContext();
+  const search = tools.find((tool) => tool.name === "memory_search");
+  assert.ok(search?.output?.render);
+  const text = search.output.render({}, {
+    memories: [
+      {
+        memory_id: "mem_x",
+        kind: "fact",
+        label: "storage",
+        version: 2,
+        snippet: "Use SQLite in WAL mode.",
+        score: 0.000001,
+        matched_terms: 2,
+        updated_at: "2026-01-01T00:00:00+00:00",
+      },
+    ],
+  })[0]?.text ?? "";
+  assert.match(text, /score 0\.000001/);
+  assert.match(text, /matched terms 2/);
+  assert.match(text, /Use SQLite in WAL mode/);
 });
 
 test("UI cards hide protocol handles from humans", () => {
@@ -149,7 +172,7 @@ test("UI cards hide protocol handles from humans", () => {
   // must never carry ids, versions, or other protocol fields.
   const meta = create.output.presentationMeta({}, value) as { text: string };
   assert.match(meta.text, /Use SQLite/);
-  assert.match(meta.text, /结论/);
+  assert.match(meta.text, /fact/);
   assert.doesNotMatch(meta.text, /mem_|version|state|workspace_id/);
 });
 
@@ -192,7 +215,7 @@ test("write tools ask approval once and pass the resolved workspace_id", async (
   assert.equal(approval.asked.length, 1);
   assert.equal(approval.asked[0]?.toolName, "memory_create");
   const reason = approval.asked[0]?.reason ?? "";
-  assert.match(reason, /记录新记忆/);
+  assert.match(reason, /record new memory/);
   assert.match(reason, /Use SQLite/);
   // The approval reason is a human sentence: no subcommand name, no raw JSON.
   assert.doesNotMatch(reason, /memory_create|workspace_id|"content"/);
@@ -211,7 +234,7 @@ test("supersede approval identifies the memory by content, never by id", async (
     fakeExec(workspacePath),
   );
   const reason = approval.asked[0]?.reason ?? "";
-  assert.match(reason, /旧记忆内容/);
+  assert.match(reason, /old memory content/);
   assert.match(reason, /Use PostgreSQL/);
   assert.doesNotMatch(reason, /mem_old/);
 });
@@ -255,6 +278,6 @@ test("Go protocol errors surface as natural-language messages", async () => {
   assert.ok(get);
   await assert.rejects(
     get.execute({ workspace_id: 1, memory_id: "mem_x" }, fakeExec(workspacePath)),
-    /该记忆已被其他操作更新/,
+    /the memory changed since it was read/,
   );
 });

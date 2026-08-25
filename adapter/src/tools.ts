@@ -273,33 +273,33 @@ type Renderer = (args: unknown, value: Record<string, JsonValue>) => Array<{ typ
 
 // Natural-language labels for displayable protocol values (design principles).
 const STATE_LABELS: Record<string, string> = {
-  active: "生效中",
-  superseded: "已被取代",
-  invalid: "已失效",
+  active: "active",
+  superseded: "superseded",
+  invalid: "invalid",
 };
 
 const ACTION_LABELS: Record<string, string> = {
-  create: "创建",
-  update: "更新",
-  supersede: "取代",
-  invalidate: "失效",
+  create: "create",
+  update: "update",
+  supersede: "supersede",
+  invalidate: "invalidate",
 };
 
 const KIND_LABELS: Record<string, string> = {
-  fact: "结论",
-  note: "注记",
+  fact: "fact",
+  note: "note",
 };
 
 const ERROR_LABELS: Record<string, string> = {
-  workspace_busy: "该工作区正被其他进程占用，请稍后重试",
-  workspace_not_found: "工作区未注册",
-  workspace_path_used: "该路径已绑定到另一个工作区",
-  workspace_broken: "工作区记忆数据库缺失或损坏",
-  memory_not_found: "没有找到该记忆",
-  version_conflict: "该记忆已被其他操作更新，请先重新读取后再试",
-  invalid_memory_state: "该记忆当前状态不允许此操作",
-  home_broken: "记忆存储目录损坏，无法访问",
-  schema_mismatch: "记忆存储格式不受支持",
+  workspace_busy: "the workspace is locked by another process; retry shortly",
+  workspace_not_found: "the workspace is not registered",
+  workspace_path_used: "the path is already bound to another workspace",
+  workspace_broken: "the workspace memory database is missing or corrupt",
+  memory_not_found: "no such memory",
+  version_conflict: "the memory changed since it was read; re-read before retrying",
+  invalid_memory_state: "the memory state does not allow this operation",
+  home_broken: "the memory store directory is corrupt",
+  schema_mismatch: "the memory store format is unsupported",
 };
 
 // formatDate keeps the printed wall time but drops the machine suffix (T and
@@ -315,31 +315,31 @@ function formatDate(value: unknown): string {
 // value in natural language: state, dates, and replacement relationships
 // expressed as the related memory's content, never as an id.
 function renderMemory(memory: Record<string, JsonValue>): string {
-  let text = `记忆 ${String(memory.memory_id ?? "")}（${STATE_LABELS[String(memory.state ?? "")] ?? String(memory.state ?? "")}，版本 ${memory.version ?? ""}）`;
-  if (typeof memory.content === "string") text += `\n内容：${memory.content}`;
-  if (typeof memory.kind === "string" && memory.kind !== "") text += `\n分轨：${KIND_LABELS[memory.kind] ?? memory.kind}`;
-  if (typeof memory.label === "string" && memory.label !== "") text += `\n标签：${memory.label}`;
-  if (Array.isArray(memory.source) && memory.source.length > 0) text += `\n来源：${memory.source.join(", ")}`;
+  let text = `memory ${String(memory.memory_id ?? "")} (${STATE_LABELS[String(memory.state ?? "")] ?? String(memory.state ?? "")}, version ${memory.version ?? ""})`;
+  if (typeof memory.content === "string") text += `\ncontent: ${memory.content}`;
+  if (typeof memory.kind === "string" && memory.kind !== "") text += `\nkind: ${KIND_LABELS[memory.kind] ?? memory.kind}`;
+  if (typeof memory.label === "string" && memory.label !== "") text += `\nlabel: ${memory.label}`;
+  if (Array.isArray(memory.source) && memory.source.length > 0) text += `\nsource: ${memory.source.join(", ")}`;
   if (typeof memory.supersedes_content === "string" && memory.supersedes_content !== "") {
-    text += `\n取代了更早的记忆：「${memory.supersedes_content}」`;
+    text += `\nsupersedes an earlier memory: "${memory.supersedes_content}"`;
   } else if (typeof memory.supersedes === "string") {
-    text += `\n取代了更早的一条记忆`;
+    text += `\nsupersedes an earlier memory`;
   }
   if (typeof memory.superseded_by_content === "string" && memory.superseded_by_content !== "") {
-    text += `\n已被新记忆取代：「${memory.superseded_by_content}」`;
+    text += `\nsuperseded by a newer memory: "${memory.superseded_by_content}"`;
   } else if (typeof memory.superseded_by === "string") {
-    text += `\n已被一条新记忆取代`;
+    text += `\nsuperseded by a newer memory`;
   }
   const created = formatDate(memory.created_at);
   const updated = formatDate(memory.updated_at);
-  if (created !== "") text += `\n创建于 ${created}`;
-  if (updated !== "" && updated !== created) text += `\n修改于 ${updated}`;
+  if (created !== "") text += `\ncreated ${created}`;
+  if (updated !== "" && updated !== created) text += `\nupdated ${updated}`;
   return text;
 }
 
 function renderWorkspace(workspace: Record<string, JsonValue> | null | undefined): string {
-  if (workspace === null || workspace === undefined) return "未注册";
-  return `工作区路径：${workspace.path}`;
+  if (workspace === null || workspace === undefined) return "unregistered";
+  return `workspace path: ${workspace.path}`;
 }
 
 const renderers: Record<string, Renderer> = {
@@ -349,36 +349,36 @@ const renderers: Record<string, Renderer> = {
   "workspace-register": (_args, value) => [
     {
       type: "text",
-      text: `${renderWorkspace(value.workspace as Record<string, JsonValue> | null | undefined)}（${value.created ? "新建" : "已存在"}）`,
+      text: `${renderWorkspace(value.workspace as Record<string, JsonValue> | null | undefined)} (${value.created ? "new" : "existing"})`,
     },
   ],
   "workspace-rebind": (_args, value) => [
     { type: "text", text: renderWorkspace(value.workspace as Record<string, JsonValue> | null | undefined) },
   ],
-  "workspace-clear": (_args, value) => [{ type: "text", text: `已删除 ${value.deleted_count ?? 0} 条记忆` }],
-  "workspace-delete": () => [{ type: "text", text: "工作区已删除（映射与记忆数据库）" }],
+  "workspace-clear": (_args, value) => [{ type: "text", text: `removed ${value.deleted_count ?? 0} memories` }],
+  "workspace-delete": () => [{ type: "text", text: "workspace deleted (mapping and memory database)" }],
   "memory-search": (_args, value) => {
     const hits = (value.memories as Array<Record<string, JsonValue>>) ?? [];
     const lines = hits.map((hit) =>
       [
-        `- ${hit.memory_id} 得分 ${hit.score ?? ""} 版本 ${hit.version ?? ""}`,
-        typeof hit.kind === "string" ? ` 分轨 ${KIND_LABELS[hit.kind] ?? hit.kind}` : "",
-        hit.label ? ` 标签 ${hit.label}` : "",
+        `- ${hit.memory_id} score ${hit.score ?? ""} matched terms ${hit.matched_terms ?? 0} version ${hit.version ?? ""}`,
+        typeof hit.kind === "string" ? ` kind ${KIND_LABELS[hit.kind] ?? hit.kind}` : "",
+        hit.label ? ` label ${hit.label}` : "",
         `\n  ${hit.snippet ?? ""}`,
       ].join(""),
     );
-    return [{ type: "text", text: lines.length > 0 ? lines.join("\n") : "没有匹配的记忆" }];
+    return [{ type: "text", text: lines.length > 0 ? lines.join("\n") : "no matching memories" }];
   },
   "memory-list": (_args, value) => {
     const items = (value.memories as Array<Record<string, JsonValue>>) ?? [];
     const lines = items.map((item) =>
       [
-        `- ${item.memory_id} ${STATE_LABELS[String(item.state ?? "")] ?? String(item.state ?? "")} 版本 ${item.version ?? ""}`,
-        typeof item.kind === "string" ? ` 分轨 ${KIND_LABELS[item.kind] ?? item.kind}` : "",
-        item.label ? ` 标签 ${item.label}` : "",
+        `- ${item.memory_id} ${STATE_LABELS[String(item.state ?? "")] ?? String(item.state ?? "")} version ${item.version ?? ""}`,
+        typeof item.kind === "string" ? ` kind ${KIND_LABELS[item.kind] ?? item.kind}` : "",
+        item.label ? ` label ${item.label}` : "",
       ].join(""),
     );
-    return [{ type: "text", text: lines.length > 0 ? lines.join("\n") : "该工作区没有记忆" }];
+    return [{ type: "text", text: lines.length > 0 ? lines.join("\n") : "no memories in this workspace" }];
   },
   "memory-get": (_args, value) => [
     { type: "text", text: renderMemory(value.memory as Record<string, JsonValue>) },
@@ -391,10 +391,10 @@ const renderers: Record<string, Renderer> = {
       const state = STATE_LABELS[String(item.state ?? "")] ?? String(item.state ?? "");
       const updated = formatDate(item.updated_at);
       const archived = item.archived_at === null ? null : formatDate(item.archived_at);
-      const tail = archived ? `，${archived} 被下一版本取代` : "（当前）";
-      return `- 版本 ${version} ${action}，${state}，${updated}${tail}`;
+      const tail = archived ? `, superseded at ${archived}` : " (current)";
+      return `- version ${version} ${action}, ${state}, ${updated}${tail}`;
     });
-    return [{ type: "text", text: lines.length > 0 ? lines.join("\n") : "没有版本历史" }];
+    return [{ type: "text", text: lines.length > 0 ? lines.join("\n") : "no version history" }];
   },
   "memory-diff": (_args, value) => {
     const changes = (value.changes as Array<Record<string, JsonValue>>) ?? [];
@@ -402,27 +402,27 @@ const renderers: Record<string, Renderer> = {
       const field = String(change.field ?? "");
       const from = JSON.stringify(change.from ?? null);
       const to = JSON.stringify(change.to ?? null);
-      return `- ${field}：${from} -> ${to}`;
+      return `- ${field}: ${from} -> ${to}`;
     });
-    const header = `版本 ${value.from_version ?? ""} 与 ${value.to_version ?? ""} 的差异`;
-    return [{ type: "text", text: lines.length > 0 ? `${header}\n${lines.join("\n")}` : `${header}\n无差异` }];
+    const header = `version ${value.from_version ?? ""} vs ${value.to_version ?? ""} differences`;
+    return [{ type: "text", text: lines.length > 0 ? `${header}\n${lines.join("\n")}` : `${header}\nno differences` }];
   },
   "memory-create": (_args, value) => [
-    { type: "text", text: `已记录：\n${renderMemory(value.memory as Record<string, JsonValue>)}` },
+    { type: "text", text: `recorded:\n${renderMemory(value.memory as Record<string, JsonValue>)}` },
   ],
   "memory-update": (_args, value) => [
-    { type: "text", text: `已更新：\n${renderMemory(value.memory as Record<string, JsonValue>)}` },
+    { type: "text", text: `updated:\n${renderMemory(value.memory as Record<string, JsonValue>)}` },
   ],
   "memory-supersede": (_args, value) => [
     {
       type: "text",
-      text: `旧记忆：\n${renderMemory(value.old as Record<string, JsonValue>)}\n新记忆：\n${renderMemory(value.new as Record<string, JsonValue>)}`,
+      text: `old:\n${renderMemory(value.old as Record<string, JsonValue>)}\nnew:\n${renderMemory(value.new as Record<string, JsonValue>)}`,
     },
   ],
   "memory-invalidate": (_args, value) => [
-    { type: "text", text: `已标记无效：\n${renderMemory(value.memory as Record<string, JsonValue>)}` },
+    { type: "text", text: `invalidated:\n${renderMemory(value.memory as Record<string, JsonValue>)}` },
   ],
-  "memory-delete": () => [{ type: "text", text: "记忆已删除（含全部历史版本）" }],
+  "memory-delete": () => [{ type: "text", text: "memory deleted (including all historical versions)" }],
 };
 
 // ---- Presentation (human-facing UI cards, replay-safe and pure) ----
@@ -439,56 +439,56 @@ function cleanMemoryText(memory: Record<string, JsonValue>): string {
 }
 
 const resultTitles: Record<string, string> = {
-  "workspace-resolve": "工作区",
-  "workspace-register": "工作区注册",
-  "workspace-rebind": "工作区重绑定",
-  "workspace-clear": "工作区清空",
-  "workspace-delete": "工作区删除",
-  "memory-search": "记忆检索",
-  "memory-list": "记忆列表",
-  "memory-get": "记忆详情",
-  "memory-history": "版本历史",
-  "memory-diff": "版本对比",
-  "memory-create": "已记录记忆",
-  "memory-update": "已更新记忆",
-  "memory-supersede": "已取代记忆",
-  "memory-invalidate": "已标记无效",
-  "memory-delete": "已删除记忆",
+  "workspace-resolve": "Workspace",
+  "workspace-register": "Workspace Registered",
+  "workspace-rebind": "Workspace Rebound",
+  "workspace-clear": "Workspace Cleared",
+  "workspace-delete": "Workspace Deleted",
+  "memory-search": "Memory Search",
+  "memory-list": "Memory List",
+  "memory-get": "Memory Detail",
+  "memory-history": "Version History",
+  "memory-diff": "Version Diff",
+  "memory-create": "Memory Recorded",
+  "memory-update": "Memory Updated",
+  "memory-supersede": "Memory Superseded",
+  "memory-invalidate": "Memory Invalidated",
+  "memory-delete": "Memory Deleted",
 };
 
 function presentationMeta(subcommand: string, value: Record<string, JsonValue>): { text: string } {
   const workspace = (value.workspace as Record<string, JsonValue> | null | undefined) ?? null;
   switch (subcommand) {
     case "workspace-resolve":
-      return { text: workspace ? `路径 ${String(workspace.path ?? "")}` : "该路径未注册工作区" };
+      return { text: workspace ? `path ${String(workspace.path ?? "")}` : "this path is not a registered workspace" };
     case "workspace-register":
     case "workspace-rebind":
-      return { text: `路径 ${String(workspace?.path ?? "")}` };
+      return { text: `path ${String(workspace?.path ?? "")}` };
     case "workspace-clear":
-      return { text: `已删除 ${value.deleted_count ?? 0} 条记忆` };
+      return { text: `removed ${value.deleted_count ?? 0} memories` };
     case "workspace-delete":
-      return { text: "已删除映射与记忆数据库" };
+      return { text: "removed mapping and memory database" };
     case "memory-search": {
       const hits = (value.memories as Array<Record<string, JsonValue>>) ?? [];
       const lines = hits.map((hit) => String(hit.snippet ?? ""));
-      return { text: lines.length > 0 ? lines.join("\n") : "没有匹配的记忆" };
+      return { text: lines.length > 0 ? lines.join("\n") : "no matching memories" };
     }
     case "memory-list": {
       const items = (value.memories as Array<Record<string, JsonValue>>) ?? [];
-      return { text: `共 ${items.length} 条记忆` };
+      return { text: `${items.length} memories` };
     }
     case "memory-history": {
       const versions = (value.versions as Array<Record<string, JsonValue>>) ?? [];
-      return { text: `共 ${versions.length} 个版本` };
+      return { text: `${versions.length} versions` };
     }
     case "memory-diff": {
       const changes = (value.changes as Array<Record<string, JsonValue>>) ?? [];
-      return { text: `${changes.length} 处变化` };
+      return { text: `${changes.length} changes` };
     }
     case "memory-supersede":
       return { text: cleanMemoryText(value.new as Record<string, JsonValue>) };
     case "memory-delete":
-      return { text: "已删除（含全部历史版本）" };
+      return { text: "deleted (including all historical versions)" };
     default:
       return { text: cleanMemoryText(value.memory as Record<string, JsonValue>) };
   }
@@ -712,37 +712,37 @@ async function describeApproval(
 
   switch (toolName) {
     case "workspace_register":
-      return `注册工作区：${text(request.path)}`;
+      return `register workspace: ${text(request.path)}`;
     case "workspace_rebind":
-      return `将工作区重绑定到：${text(request.path)}`;
+      return `rebind workspace to: ${text(request.path)}`;
     case "workspace_clear":
-      return `清空该工作区的全部记忆与历史版本`;
+      return `clear all memories and history of this workspace`;
     case "workspace_delete":
-      return `删除该工作区的映射与记忆数据库（不影响用户目录）`;
+      return `delete this workspace's mapping and memory database (the user's directory is untouched)`;
     case "memory_create":
-      return `记录新记忆：「${short(text(request.content))}」`;
+      return `record new memory: "${short(text(request.content))}"`;
     case "memory_update": {
       const previous = await currentContent(request, exec, config);
       const parts: string[] = [];
-      if (typeof request.content === "string") parts.push(`内容改为「${short(request.content)}」`);
-      if (request.kind !== undefined) parts.push(`分轨改为「${text(request.kind)}」`);
-      if (request.label !== undefined) parts.push(`标签${text(request.label) === "" ? "清除" : `改为「${text(request.label)}」`}`);
-      if (request.source !== undefined) parts.push("来源已更新");
-      if (request.metadata !== undefined) parts.push("元数据已更新");
-      return `更新记忆「${short(previous)}」：${parts.join("，")}`;
+      if (typeof request.content === "string") parts.push(`content → "${short(request.content)}"`);
+      if (request.kind !== undefined) parts.push(`kind → "${text(request.kind)}"`);
+      if (request.label !== undefined) parts.push(`label ${text(request.label) === "" ? "cleared" : `→ "${text(request.label)}"`}`);
+      if (request.source !== undefined) parts.push("source updated");
+      if (request.metadata !== undefined) parts.push("metadata updated");
+      return `update memory "${short(previous)}": ${parts.join(", ")}`;
     }
     case "memory_supersede": {
       const previous = await currentContent(request, exec, config);
       const replacement = (request.new as Record<string, unknown> | undefined)?.content;
-      return `用新记忆取代「${short(previous)}」：「${short(text(replacement))}」`;
+      return `replace memory "${short(previous)}" with: "${short(text(replacement))}"`;
     }
     case "memory_invalidate": {
       const previous = await currentContent(request, exec, config);
-      return `将记忆「${short(previous)}」标记为无效`;
+      return `mark memory "${short(previous)}" as invalid`;
     }
     case "memory_delete": {
       const previous = await currentContent(request, exec, config);
-      return `删除记忆：「${short(previous)}」`;
+      return `delete memory: "${short(previous)}"`;
     }
     default:
       return toolName;
