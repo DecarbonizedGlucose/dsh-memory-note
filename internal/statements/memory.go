@@ -6,9 +6,9 @@ const (
 	CreateMemoryInfo = `CREATE TABLE memory_info (
 		id INTEGER PRIMARY KEY CHECK(id = 1),
 		workspace_id INTEGER NOT NULL CHECK(workspace_id BETWEEN 1 AND 9007199254740991),
-		schema_version INTEGER NOT NULL CHECK(schema_version = 4)
+		schema_version INTEGER NOT NULL CHECK(schema_version = 5)
 	)`
-	InsertMemoryInfo = `INSERT INTO memory_info(id, workspace_id, schema_version) VALUES(1, ?, 4)`
+	InsertMemoryInfo = `INSERT INTO memory_info(id, workspace_id, schema_version) VALUES(1, ?, 5)`
 	ReadMemoryInfo   = `SELECT workspace_id, schema_version FROM memory_info WHERE id = 1`
 
 	CreateMemories = `CREATE TABLE memories (
@@ -67,13 +67,35 @@ const (
 	)`
 	CreateMemoryEventsIndex = `CREATE INDEX memory_events_by_memory ON memory_events(workspace_id, memory_id, id)`
 
-	CreateMemoriesSearch = `CREATE INDEX memories_search ON memories(state, kind, label, updated_at, memory_id)`
-	CreateMemoriesList   = `CREATE INDEX memories_list ON memories(workspace_id, updated_at, memory_id)`
+	CreateMemoryFTS = `CREATE VIRTUAL TABLE memory_fts USING fts5(
+		content,
+		kind,
+		label,
+		content = 'memories',
+		content_rowid = 'rowid',
+		tokenize = 'unicode61 remove_diacritics 0'
+	)`
+	CreateMemoryFTSInsert = `CREATE TRIGGER memories_fts_after_insert AFTER INSERT ON memories BEGIN
+		INSERT INTO memory_fts(rowid, content, kind, label)
+		VALUES (new.rowid, new.content, new.kind, new.label);
+	END`
+	CreateMemoryFTSDelete = `CREATE TRIGGER memories_fts_after_delete AFTER DELETE ON memories BEGIN
+		INSERT INTO memory_fts(memory_fts, rowid, content, kind, label)
+		VALUES ('delete', old.rowid, old.content, old.kind, old.label);
+	END`
+	CreateMemoryFTSUpdate = `CREATE TRIGGER memories_fts_after_update
+		AFTER UPDATE OF content, kind, label ON memories BEGIN
+		INSERT INTO memory_fts(memory_fts, rowid, content, kind, label)
+		VALUES ('delete', old.rowid, old.content, old.kind, old.label);
+		INSERT INTO memory_fts(rowid, content, kind, label)
+		VALUES (new.rowid, new.content, new.kind, new.label);
+	END`
+	RebuildMemoryFTS   = `INSERT INTO memory_fts(memory_fts) VALUES('rebuild')`
+	CreateMemoriesList = `CREATE INDEX memories_list ON memories(workspace_id, updated_at, memory_id)`
 
 	SelectMemoryColumns = `SELECT memory_id, workspace_id, content, kind, label, source_json, metadata_json,
 		state, version, supersedes, superseded_by, created_at, created_offset, updated_at, updated_offset FROM memories`
 	SelectMemoryByID = SelectMemoryColumns + ` WHERE workspace_id = ? AND memory_id = ?`
-	SelectActive     = SelectMemoryColumns + ` WHERE workspace_id = ? AND state = 'active'`
 	SelectFirstPage  = SelectMemoryColumns + ` WHERE workspace_id = ? ORDER BY updated_at DESC, memory_id ASC LIMIT ?`
 	SelectNextPage   = SelectMemoryColumns + ` WHERE workspace_id = ? AND (updated_at < ? OR (updated_at = ? AND memory_id > ?))
 		ORDER BY updated_at DESC, memory_id ASC LIMIT ?`
@@ -128,6 +150,9 @@ var MemorySchema = []string{
 	CreateMemoryHistory,
 	CreateMemoryEvents,
 	CreateMemoryEventsIndex,
-	CreateMemoriesSearch,
+	CreateMemoryFTS,
+	CreateMemoryFTSInsert,
+	CreateMemoryFTSDelete,
+	CreateMemoryFTSUpdate,
 	CreateMemoriesList,
 }

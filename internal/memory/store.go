@@ -134,19 +134,60 @@ func (tx *Tx) Get(ctx context.Context, memoryID string) (protocol.Memory, error)
 	return scanMemory(tx.QueryRowContext(ctx, statements.SelectMemoryByID, tx.wid, memoryID))
 }
 
-func (tx *Tx) Active(ctx context.Context) ([]protocol.Memory, error) {
-	rows, err := tx.QueryContext(ctx, statements.SelectActive, tx.wid)
+type SearchOptions struct {
+	Query         string
+	Kinds         []string
+	Labels        []string
+	CreatedAfter  *protocol.Timestamp
+	CreatedBefore *protocol.Timestamp
+	UpdatedAfter  *protocol.Timestamp
+	UpdatedBefore *protocol.Timestamp
+	Limit         int
+}
+
+type SearchCandidate struct {
+	Memory protocol.Memory
+	Rank   float64
+}
+
+// Search reads a bounded candidate set. FTS MATCH is used when Query is set;
+// exact filters are ordinary bound SQL conditions in either mode.
+func (tx *Tx) Search(ctx context.Context, options SearchOptions) ([]SearchCandidate, error) {
+	query := statements.MemorySearch(
+		options.Query != "", len(options.Kinds), len(options.Labels),
+		options.CreatedAfter != nil, options.CreatedBefore != nil,
+		options.UpdatedAfter != nil, options.UpdatedBefore != nil,
+	)
+	args := make([]any, 0, 3+len(options.Kinds)+len(options.Labels)+4)
+	if options.Query != "" {
+		args = append(args, options.Query)
+	}
+	args = append(args, tx.wid)
+	for _, kind := range options.Kinds {
+		args = append(args, kind)
+	}
+	for _, label := range options.Labels {
+		args = append(args, label)
+	}
+	for _, value := range []*protocol.Timestamp{options.CreatedAfter, options.CreatedBefore, options.UpdatedAfter, options.UpdatedBefore} {
+		if value != nil {
+			args = append(args, value.Unix())
+		}
+	}
+	args = append(args, options.Limit)
+	rows, err := tx.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, internalError("cannot search memories")
 	}
 	defer rows.Close()
-	result := make([]protocol.Memory, 0)
+	result := make([]SearchCandidate, 0)
 	for rows.Next() {
-		memory, err := scanMemory(rows)
+		var rank float64
+		memory, err := scanMemoryWithExtra(rows, &rank)
 		if err != nil {
 			return nil, err
 		}
-		result = append(result, memory)
+		result = append(result, SearchCandidate{Memory: memory, Rank: rank})
 	}
 	if err := rows.Err(); err != nil {
 		return nil, internalError("cannot read memories")
@@ -342,12 +383,18 @@ func (tx *Tx) Clear(ctx context.Context) (int64, error) {
 type scanner interface{ Scan(...any) error }
 
 func scanMemory(row scanner) (protocol.Memory, error) {
+	return scanMemoryWithExtra(row)
+}
+
+func scanMemoryWithExtra(row scanner, extra ...any) (protocol.Memory, error) {
 	var memory protocol.Memory
 	var label, supersedes, supersededBy stdsql.NullString
 	var source, metadata string
 	var created, createdOffset, updated, updatedOffset int64
-	if err := row.Scan(&memory.ID, &memory.WorkspaceID, &memory.Content, &memory.Kind, &label, &source, &metadata,
-		&memory.State, &memory.Version, &supersedes, &supersededBy, &created, &createdOffset, &updated, &updatedOffset); err != nil {
+	targets := []any{&memory.ID, &memory.WorkspaceID, &memory.Content, &memory.Kind, &label, &source, &metadata,
+		&memory.State, &memory.Version, &supersedes, &supersededBy, &created, &createdOffset, &updated, &updatedOffset}
+	targets = append(targets, extra...)
+	if err := row.Scan(targets...); err != nil {
 		if errors.Is(err, stdsql.ErrNoRows) {
 			return protocol.Memory{}, protocol.NewError(protocol.CodeMemoryNotFound, "memory not found")
 		}

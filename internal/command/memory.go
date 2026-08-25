@@ -42,7 +42,19 @@ func memorySearch(ctx context.Context, storeRoot, sessionID, raw string) (protoc
 		return protocol.MemorySearchData{}, err
 	}
 	defer tx.Rollback()
-	memories, err := tx.Active(ctx)
+	query := buildFTSQuery(terms)
+	candidateLimit := limit * 4
+	if candidateLimit < 32 {
+		candidateLimit = 32
+	}
+	options := memorystore.SearchOptions{Query: query, Kinds: kinds, Labels: labels, Limit: candidateLimit}
+	if request.Filter != nil {
+		options.CreatedAfter = request.Filter.CreatedAfter
+		options.CreatedBefore = request.Filter.CreatedBefore
+		options.UpdatedAfter = request.Filter.UpdatedAfter
+		options.UpdatedBefore = request.Filter.UpdatedBefore
+	}
+	candidates, err := tx.Search(ctx, options)
 	if err != nil {
 		return protocol.MemorySearchData{}, err
 	}
@@ -51,17 +63,19 @@ func memorySearch(ctx context.Context, storeRoot, sessionID, raw string) (protoc
 	}
 
 	hits := make([]protocol.SearchHit, 0)
-	for _, item := range memories {
-		if !matchesFilter(item, request.Filter, kinds, labels) {
+	for _, candidate := range candidates {
+		item := candidate.Memory
+		matchedTerms := countMatchedTerms(item, terms)
+		if len(terms) != 0 && matchedTerms == 0 {
 			continue
 		}
-		score, matched := matchTerms(item, terms)
-		if len(terms) != 0 && !matched {
-			continue
+		score := 0.0
+		if len(terms) != 0 {
+			score = -candidate.Rank
 		}
 		hits = append(hits, protocol.SearchHit{
 			ID: item.ID, Kind: item.Kind, Label: item.Label, Version: item.Version,
-			Snippet: snippet(item.Content), Score: score, UpdatedAt: item.UpdatedAt,
+			Snippet: snippet(item.Content), Score: score, MatchedTerms: matchedTerms, UpdatedAt: item.UpdatedAt,
 		})
 	}
 	sort.Slice(hits, func(i, j int) bool {
@@ -716,6 +730,11 @@ func checkSearch(request protocol.MemorySearchRequest) ([]string, []string, []st
 			if len(kinds) == 0 {
 				return nil, nil, nil, 0, protocol.Invalid("filter kinds must not be empty")
 			}
+			for _, kind := range kinds {
+				if !protocol.ValidMemoryKind(kind) {
+					return nil, nil, nil, 0, protocol.Invalid("filter kind must be fact or note")
+				}
+			}
 		}
 		if request.Filter.Labels != nil {
 			labels = cleanLabels(request.Filter.Labels)
@@ -748,48 +767,15 @@ func hasTimeFilter(filter *protocol.SearchFilter) bool {
 	return filter != nil && (filter.CreatedAfter != nil || filter.CreatedBefore != nil || filter.UpdatedAfter != nil || filter.UpdatedBefore != nil)
 }
 
-func matchesFilter(item protocol.Memory, filter *protocol.SearchFilter, kinds, labels []string) bool {
-	if filter == nil {
-		return true
+func buildFTSQuery(terms []string) string {
+	quoted := make([]string, 0, len(terms))
+	for _, term := range terms {
+		quoted = append(quoted, `"`+strings.ReplaceAll(term, `"`, `""`)+`"`)
 	}
-	if len(kinds) != 0 && !containsKind(kinds, item.Kind) {
-		return false
-	}
-	if len(labels) != 0 && !containsLabel(labels, item.Label) {
-		return false
-	}
-	return within(item.CreatedAt, filter.CreatedAfter, filter.CreatedBefore) && within(item.UpdatedAt, filter.UpdatedAfter, filter.UpdatedBefore)
+	return strings.Join(quoted, " OR ")
 }
 
-func containsKind(values []string, kind string) bool {
-	for _, candidate := range values {
-		if candidate == kind {
-			return true
-		}
-	}
-	return false
-}
-
-func containsLabel(values []string, value *string) bool {
-	if value == nil {
-		return false
-	}
-	for _, candidate := range values {
-		if candidate == *value {
-			return true
-		}
-	}
-	return false
-}
-
-func within(value protocol.Timestamp, after, before *protocol.Timestamp) bool {
-	return (after == nil || !value.Before(after.Time)) && (before == nil || !value.After(before.Time))
-}
-
-func matchTerms(item protocol.Memory, terms []string) (float64, bool) {
-	if len(terms) == 0 {
-		return 0, true
-	}
+func countMatchedTerms(item protocol.Memory, terms []string) int {
 	text := asciiFold(item.Content)
 	text += "\n" + asciiFold(item.Kind)
 	if item.Label != nil {
@@ -801,7 +787,7 @@ func matchTerms(item protocol.Memory, terms []string) (float64, bool) {
 			matched++
 		}
 	}
-	return float64(matched) / float64(len(terms)), matched != 0
+	return matched
 }
 
 func snippet(content string) string {

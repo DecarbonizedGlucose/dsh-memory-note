@@ -23,6 +23,14 @@
     }
   },
   {
+    "name": "memory-search-fts-literal",
+    "command": "memory-search",
+    "request": {
+      "workspace_id": 1,
+      "query": "sqlite NOT \"remote\""
+    }
+  },
+  {
     "name": "memory-list",
     "command": "memory-list",
     "request": {

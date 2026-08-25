@@ -312,12 +312,13 @@ filter 规则：
 
 query 规则：
 
-1. 按连续 Unicode letter/number（类别 L\* 与 N\*）切分关键词；不做 Unicode 归一化；
-2. 大小写不敏感仅作用于 ASCII（A–Z ↔ a–z）；其余字符按字节精确比较；
-3. 关键词在 content、kind、label 中做 substring match；
-4. 命中任意关键词即可；
-5. score 为命中关键词数除以关键词总数；没有 query 时 score 固定为 0；
-6. 按 `score DESC, updated_at DESC, memory_id ASC` 排序（`memory_id` 按 UTF-8 byte 序比较），再应用 limit。
+1. Go 按连续 Unicode letter/number（类别 L\* 与 N\*）切分 query，将 ASCII A–Z 折叠为 a–z，保序去重且不做 Unicode 归一化。得到的 term 会作为 FTS 值逐项加引号，再用 `OR` 连接；调用方文本不会被当作原始 FTS 语法解释；
+2. SQLite 使用 `unicode61 remove_diacritics 0` 对索引中的 `content`、`kind` 与 `label` 分词。`MATCH` 命中至少一个 query term 的记录进入候选集，且只允许 active 记录；
+3. kind、label 与时间过滤作为普通 SQL 条件执行，语义仍遵循上面的 filter 规则；
+4. 数据库最多返回 `max(4 × limit, 32)` 条候选，先按 SQLite BM25 rank，再按 `updated_at DESC, memory_id ASC` 排序；
+5. Go 对候选做复核：prepared term 在 `content`、`kind` 与 `label` 中按 substring 匹配，仍只折叠 ASCII 大小写。复核没有命中 term 的候选被丢弃；`matched_terms` 是复核命中的 distinct query term 数；
+6. `score` 是 SQLite `bm25()` 值的相反数，因此数值越大表示词法匹配越好。没有 query 时，`score` 与 `matched_terms` 都固定为 0；
+7. 复核后的结果按 `score DESC, updated_at DESC, memory_id ASC` 排序（`memory_id` 按 UTF-8 byte 序比较），再应用 limit。
 
 Response data：
 
@@ -330,14 +331,15 @@ Response data：
       "label": "storage",
       "version": 2,
       "snippet": "Use SQLite in WAL mode.",
-      "score": 1,
+      "score": 0.000001,
+      "matched_terms": 1,
       "updated_at": "2026-08-21T01:02:03+08:00"
     }
   ]
 }
 ```
 
-SearchHit 的 label 未设置时为 null；kind 恒存在。snippet 取 content 开头最多 240 bytes，若截断则停在 UTF-8 编码边界（不产生半个字符）。无结果返回空数组。
+SearchHit 的 label 未设置时为 null；kind 恒存在。`matched_terms` 是 0 到 prepared query term 总数之间的整数。snippet 取 content 开头最多 240 bytes，若截断则停在 UTF-8 编码边界（不产生半个字符）。无结果返回空数组。
 
 ### 7.2 `memory-get`
 
@@ -543,7 +545,7 @@ Request：
 {"workspace_id": 1, "memory_id": "mem_...", "from_version": 1, "to_version": 2}
 ```
 
-比较同一记忆的两个已存在版本。任一版本可以是当前版本或历史版本；两者必须不同。只返回发生变化的字段，每项带 `from` 与 `to`；未列出的字段表示相同。参与比较的字段：content/type/scope/source/metadata/state。
+比较同一记忆的两个已存在版本。任一版本可以是当前版本或历史版本；两者必须不同。只返回发生变化的字段，每项带 `from` 与 `to`；未列出的字段表示相同。参与比较的字段：content/kind/label/source/metadata/state。
 
 Response data：
 

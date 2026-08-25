@@ -65,25 +65,28 @@ func TestWorkspaceAndMemoryLifecycle(t *testing.T) {
 	search := wantData[protocol.MemorySearchData](t, call(t, ctx, storeRoot, "memory-search", map[string]any{
 		"workspace_id": wid, "query": "sqlite missing", "filter": map[string]any{"kinds": []string{"fact"}},
 	}))
-	if len(search.Memories) != 1 || search.Memories[0].Score != 0.5 {
+	if len(search.Memories) != 1 || search.Memories[0].Score <= 0 || search.Memories[0].MatchedTerms != 1 {
 		t.Fatalf("search data = %#v", search)
 	}
 
-	// Filter-only search has score 0, and ASCII case folding matches.
+	// ASCII case folding is applied before the query reaches FTS5.
 	filterOnly := wantData[protocol.MemorySearchData](t, call(t, ctx, storeRoot, "memory-search", map[string]any{
 		"workspace_id": wid, "query": "SQLITE", "filter": map[string]any{"labels": []string{"storage"}},
 	}))
-	if len(filterOnly.Memories) != 1 || filterOnly.Memories[0].Score != 1 {
+	if len(filterOnly.Memories) != 1 || filterOnly.Memories[0].Score <= 0 || filterOnly.Memories[0].MatchedTerms != 1 {
 		t.Fatalf("filter-only search data = %#v", filterOnly)
 	}
 	scored := wantData[protocol.MemorySearchData](t, call(t, ctx, storeRoot, "memory-search", map[string]any{
 		"workspace_id": wid, "filter": map[string]any{"labels": []string{"storage"}},
 	}))
-	if len(scored.Memories) != 1 || scored.Memories[0].Score != 0 {
+	if len(scored.Memories) != 1 || scored.Memories[0].Score != 0 || scored.Memories[0].MatchedTerms != 0 {
 		t.Fatalf("filter-only score = %#v", scored)
 	}
 	wantError(t, call(t, ctx, storeRoot, "memory-search", map[string]any{
 		"workspace_id": wid, "filter": map[string]any{"kinds": []string{}},
+	}), protocol.CodeInvalidRequest)
+	wantError(t, call(t, ctx, storeRoot, "memory-search", map[string]any{
+		"workspace_id": wid, "filter": map[string]any{"kinds": []string{"other"}},
 	}), protocol.CodeInvalidRequest)
 
 	updated := wantData[protocol.MemoryUpdateData](t, call(t, ctx, storeRoot, "memory-update", map[string]any{
@@ -158,6 +161,85 @@ func TestWorkspaceAndMemoryLifecycle(t *testing.T) {
 		call(t, ctx, storeRoot, "workspace-register", map[string]any{"path": thirdPath}))
 	if next.Workspace.ID != 2 {
 		t.Fatalf("workspace ID was reused: %#v", next)
+	}
+}
+
+func TestMemorySearchFTS(t *testing.T) {
+	ctx := context.Background()
+	storeRoot := filepath.Join(t.TempDir(), "store")
+	project := t.TempDir()
+	wid := wantData[protocol.WorkspaceRegisterData](t,
+		call(t, ctx, storeRoot, "workspace-register", map[string]any{"path": project})).Workspace.ID
+
+	strong := wantData[protocol.MemoryCreateData](t, call(t, ctx, storeRoot, "memory-create", map[string]any{
+		"workspace_id": wid, "content": "sqlite sqlite sqlite", "kind": "fact", "label": "database",
+	})).Memory
+	weak := wantData[protocol.MemoryCreateData](t, call(t, ctx, storeRoot, "memory-create", map[string]any{
+		"workspace_id": wid, "content": "sqlite", "kind": "note", "label": "scratch",
+	})).Memory
+
+	// BM25 ranks repeated evidence first, while matched_terms reports distinct
+	// prepared terms rather than term frequency.
+	result := wantData[protocol.MemorySearchData](t, call(t, ctx, storeRoot, "memory-search", map[string]any{
+		"workspace_id": wid, "query": "sqlite missing", "limit": 2,
+	}))
+	if len(result.Memories) != 2 || result.Memories[0].ID != strong.ID ||
+		result.Memories[0].Score <= result.Memories[1].Score || result.Memories[0].MatchedTerms != 1 {
+		t.Fatalf("ranked FTS result = %#v", result)
+	}
+
+	// FTS token matching is not the old application substring scan.
+	substring := wantData[protocol.MemorySearchData](t, call(t, ctx, storeRoot, "memory-search", map[string]any{
+		"workspace_id": wid, "query": "lite",
+	}))
+	if len(substring.Memories) != 0 {
+		t.Fatalf("substring unexpectedly matched FTS token: %#v", substring)
+	}
+
+	// FTS operators in caller text become ordinary quoted terms. NOT does not
+	// exclude the row that matches sqlite.
+	literal := wantData[protocol.MemorySearchData](t, call(t, ctx, storeRoot, "memory-search", map[string]any{
+		"workspace_id": wid, "query": "sqlite NOT missing",
+	}))
+	if len(literal.Memories) != 2 {
+		t.Fatalf("caller FTS syntax was interpreted: %#v", literal)
+	}
+
+	// Exact filters are pushed into SQL and remain independent dimensions.
+	filtered := wantData[protocol.MemorySearchData](t, call(t, ctx, storeRoot, "memory-search", map[string]any{
+		"workspace_id": wid, "query": "database", "filter": map[string]any{"kinds": []string{"fact"}},
+	}))
+	if len(filtered.Memories) != 1 || filtered.Memories[0].ID != strong.ID {
+		t.Fatalf("indexed label and kind filter = %#v", filtered)
+	}
+
+	// The update trigger removes old indexed text and inserts the new value.
+	wantData[protocol.MemoryUpdateData](t, call(t, ctx, storeRoot, "memory-update", map[string]any{
+		"workspace_id": wid, "memory_id": strong.ID, "expected_version": 1, "content": "postgres postgres",
+	}))
+	afterUpdate := wantData[protocol.MemorySearchData](t, call(t, ctx, storeRoot, "memory-search", map[string]any{
+		"workspace_id": wid, "query": "sqlite",
+	}))
+	if len(afterUpdate.Memories) != 1 || afterUpdate.Memories[0].ID != weak.ID {
+		t.Fatalf("stale FTS text after update = %#v", afterUpdate)
+	}
+	postgres := wantData[protocol.MemorySearchData](t, call(t, ctx, storeRoot, "memory-search", map[string]any{
+		"workspace_id": wid, "query": "postgres",
+	}))
+	if len(postgres.Memories) != 1 || postgres.Memories[0].ID != strong.ID {
+		t.Fatalf("updated FTS text missing = %#v", postgres)
+	}
+
+	// Indexed rows may remain physically present after a state-only change,
+	// but inactive rows never enter the candidate set.
+	wantData[protocol.MemoryInvalidateData](t, call(t, ctx, storeRoot, "memory-invalidate", map[string]any{
+		"workspace_id": wid, "memory_id": strong.ID, "expected_version": 2,
+	}))
+	postgres = wantData[protocol.MemorySearchData](t, call(t, ctx, storeRoot, "memory-search", map[string]any{
+		"workspace_id": wid, "query": "postgres",
+	}))
+	if len(postgres.Memories) != 0 {
+		t.Fatalf("inactive memory entered FTS candidates: %#v", postgres)
 	}
 }
 

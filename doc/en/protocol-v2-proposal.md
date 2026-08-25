@@ -312,12 +312,13 @@ Filter rules:
 
 Query rules:
 
-1. Keywords are split on maximal runs of Unicode letters/digits (categories L\* and N\*); no Unicode normalization is applied.
-2. Case-insensitivity applies to ASCII only (A–Z ↔ a–z); other characters compare byte-for-byte.
-3. Keywords are substring-matched against `content`, `kind`, and `label`.
-4. Matching any keyword is enough.
-5. `score` is the number of matched keywords over the total; with no query, `score` is fixed at 0.
-6. Results sort by `score DESC, updated_at DESC, memory_id ASC` (with `memory_id` compared in UTF-8 byte order), then `limit` is applied.
+1. Go splits the query on maximal runs of Unicode letters/digits (categories L\* and N\*), folds ASCII A–Z to a–z, removes duplicate terms in order, and does no Unicode normalization. The resulting terms are quoted as FTS values and joined with `OR`; caller text is never interpreted as raw FTS syntax.
+2. SQLite tokenizes indexed `content`, `kind`, and `label` with `unicode61 remove_diacritics 0`. A record enters the candidate set when `MATCH` finds at least one query term. Only active records are eligible.
+3. Kind, label, and time filters are applied as ordinary SQL conditions and remain governed by the filter rules above.
+4. The database returns at most `max(4 × limit, 32)` candidates, ordered by SQLite BM25 rank, then `updated_at DESC, memory_id ASC`.
+5. Go rechecks each candidate by substring matching the prepared terms against `content`, `kind`, and `label`, using ASCII-only case folding. A candidate with no rechecked term is discarded. `matched_terms` is the number of distinct query terms found by this check.
+6. `score` is the negated SQLite `bm25()` value, so a larger value is a better lexical match. With no query, `score` and `matched_terms` are both 0.
+7. Surviving results sort by `score DESC, updated_at DESC, memory_id ASC` (with `memory_id` compared in UTF-8 byte order), then `limit` is applied.
 
 Response data:
 
@@ -330,14 +331,15 @@ Response data:
       "label": "storage",
       "version": 2,
       "snippet": "Use SQLite in WAL mode.",
-      "score": 1,
+      "score": 0.000001,
+      "matched_terms": 1,
       "updated_at": "2026-08-21T01:02:03+08:00"
     }
   ]
 }
 ```
 
-A SearchHit's `label` is null when unset; `kind` is always present. `snippet` is the first 240 bytes of `content`, cut at a UTF-8 code-point boundary if truncated (never half a character). No results returns an empty array.
+A SearchHit's `label` is null when unset; `kind` is always present. `matched_terms` is an integer from 0 through the number of prepared query terms. `snippet` is the first 240 bytes of `content`, cut at a UTF-8 code-point boundary if truncated (never half a character). No results returns an empty array.
 
 ### 7.2 `memory-get`
 

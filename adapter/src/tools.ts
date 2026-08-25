@@ -111,7 +111,7 @@ export const parameterSpecs: Record<string, Record<string, ParamSpec>> = {
   "workspace-delete": { workspace_id: workspaceId },
   "memory-search": {
     workspace_id: workspaceId,
-    query: { type: "string", description: "Free-text keywords (ASCII case-insensitive substring)." },
+    query: { type: "string", description: "Free-text terms matched by the local FTS5 index." },
     filter: searchFilter,
     limit: { type: "number", description: "1..20, default 8." },
   },
@@ -221,7 +221,7 @@ const TOOL_NAMES: Record<string, { name: string; description: string }> = {
   "memory-search": {
     name: "memory_search",
     description:
-      "Retrieve candidate active memories by keyword query and/or exact type/scope/time filters, ordered by score then recency. Candidate retrieval, not a relevance verdict.",
+      "Retrieve candidate active memories with local FTS5 lexical search and/or exact kind, label, and time filters. A higher score is a better BM25 match; this is candidate retrieval, not a relevance verdict.",
   },
   "memory-list": {
     name: "memory_list",

@@ -57,13 +57,14 @@ type SearchFilter struct {
 }
 
 type SearchHit struct {
-	ID        string    `json:"memory_id"`
-	Kind      string    `json:"kind"`
-	Label     *string   `json:"label"`
-	Version   int64     `json:"version"`
-	Snippet   string    `json:"snippet"`
-	Score     float64   `json:"score"`
-	UpdatedAt Timestamp `json:"updated_at"`
+	ID           string    `json:"memory_id"`
+	Kind         string    `json:"kind"`
+	Label        *string   `json:"label"`
+	Version      int64     `json:"version"`
+	Snippet      string    `json:"snippet"`
+	Score        float64   `json:"score"`
+	MatchedTerms int       `json:"matched_terms"`
+	UpdatedAt    Timestamp `json:"updated_at"`
 }
 
 // ListItem is the compact row returned by memory-list.

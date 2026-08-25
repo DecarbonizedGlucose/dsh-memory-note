@@ -3,7 +3,7 @@
 package statements
 
 const (
-	SchemaVersion       = 4
+	SchemaVersion       = 5
 	MetaApplicationID   = 0x44534d4d // DSMM
 	MemoryApplicationID = 0x44534d57 // DSMW
 

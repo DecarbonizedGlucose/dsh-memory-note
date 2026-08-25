@@ -109,6 +109,8 @@ WIDs are stable and are not reused after workspace deletion.
 
 Each workspace has one dedicated `workspace-{WID}-memory.db`. It stores only that workspace's memories, states, versions, metadata, sources, replacement relationships, and archived historical versions.
 
+Each memory database also contains an FTS5 index over the current rows' `content`, `kind`, and `label`. `memories` remains the authoritative table. SQLite triggers update the index in the same transaction as each memory write, and the index can be rebuilt from `memories` without changing memory data.
+
 No query or transaction may combine memory rows from different workspace databases. The WID from `meta.db`, not a request-supplied file path, determines which database file is opened.
 
 SQLite transactions remain responsible for atomic changes inside a memory database. The cross-process lock in `meta.db` coordinates access to the database file and workspace lifecycle; it does not replace SQLite transactions.
@@ -227,7 +229,9 @@ The eight public memory subcommands are:
 
 ### `memory-search`
 
-Retrieves candidate memories by query and filter. Filtering dimensions include keywords, kind, label, and time. It is a candidate retrieval operation, not a semantic decision that a memory is relevant or true.
+Retrieves candidate memories by query and filter. Query terms use the local SQLite FTS5 index and BM25 ranking; kind, label, and time remain exact filters. Search reads at most a bounded candidate set and performs a small application-level term-coverage check before returning results. It is a candidate retrieval operation, not a semantic decision that a memory is relevant or true.
+
+Search has one lexical channel. It does not use embeddings, an external model, vector storage, or rank fusion. This keeps retrieval local and preserves one-shot execution.
 
 ### `memory-get`
 
