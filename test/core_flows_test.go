@@ -314,4 +314,13 @@ func TestMemoryHistoryAcrossProcesses(t *testing.T) {
 	if historical.Data["memory"].(map[string]any)["content"] != "Use SQLite." {
 		t.Fatalf("historical read = %#v", historical)
 	}
+
+	// memory-diff compares two versions across processes.
+	diff := mustRun(t, binary, home, "memory-diff", map[string]any{
+		"workspace_id": 1, "memory_id": id, "from_version": 1, "to_version": 2,
+	})
+	changes := diff.Data["changes"].([]any)
+	if len(changes) != 1 || changes[0].(map[string]any)["field"] != "content" {
+		t.Fatalf("diff = %#v, want one content change", diff)
+	}
 }
