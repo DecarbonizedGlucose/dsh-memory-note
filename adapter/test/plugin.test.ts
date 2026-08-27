@@ -255,19 +255,24 @@ test("write tools ask approval once and pass the resolved workspace_id", async (
   const { approval, tools, calls } = makeContext();
   const create = tools.find((tool) => tool.name === "memory_create");
   assert.ok(create);
-  const value = await create.execute({ content: "Use SQLite.", kind: "fact" }, fakeExec(workspacePath));
+  const value = await create.execute(
+    { content: "Use SQLite.", kind: "fact", branches: ["main"] },
+    fakeExec(workspacePath),
+  );
   assert.equal((value as { memory: { workspace_id: number } }).memory.workspace_id, 7);
   assert.equal(approval.asked.length, 1);
   assert.equal(approval.asked[0]?.toolName, "memory_create");
   const reason = approval.asked[0]?.reason ?? "";
   assert.match(reason, /record new memory/);
   assert.match(reason, /Use SQLite/);
+  assert.match(reason, /branches: main/);
   // The approval reason is a human sentence: no subcommand name, no raw JSON.
   assert.doesNotMatch(reason, /memory_create|workspace_id|"content"/);
   const commands = calls();
   assert.equal(commands[0]?.subcommand, "workspace-resolve");
   assert.equal(commands[1]?.subcommand, "memory-create");
   assert.equal(commands[1]?.request.workspace_id, 7);
+  assert.deepEqual(commands[1]?.request.branches, ["main"]);
 });
 
 test("supersede approval identifies the memory by content, never by id", async () => {

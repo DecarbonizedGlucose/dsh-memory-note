@@ -360,7 +360,7 @@ func TestMemoryDiff(t *testing.T) {
 	})).Memory
 	wantData[protocol.MemoryUpdateData](t, call(t, ctx, storeRoot, "memory-update", map[string]any{
 		"workspace_id": wid, "memory_id": created.ID, "expected_version": 1,
-		"content": "Use SQLite in WAL mode.", "kind": "fact",
+		"content": "Use SQLite in WAL mode.", "kind": "fact", "branches": []string{"main"},
 	}))
 
 	diff := wantData[protocol.MemoryDiffData](t, call(t, ctx, storeRoot, "memory-diff", map[string]any{
@@ -370,10 +370,10 @@ func TestMemoryDiff(t *testing.T) {
 	for _, change := range diff.Changes {
 		fields[change.Field] = true
 	}
-	if !fields["content"] || !fields["kind"] {
+	if !fields["content"] || !fields["kind"] || !fields["branches"] {
 		t.Fatalf("changes = %#v", diff.Changes)
 	}
-	if len(diff.Changes) != 2 {
+	if len(diff.Changes) != 3 {
 		t.Fatalf("changes = %#v", diff.Changes)
 	}
 
@@ -468,9 +468,12 @@ func TestBranchFilter(t *testing.T) {
 	wantData[protocol.MemoryCreateData](t, call(t, ctx, storeRoot, "memory-create", map[string]any{
 		"workspace_id": wid, "content": "branchtest dev only", "kind": "note", "branches": []string{"dev"},
 	}))
-	wantData[protocol.MemoryCreateData](t, call(t, ctx, storeRoot, "memory-create", map[string]any{
+	allBranches := wantData[protocol.MemoryCreateData](t, call(t, ctx, storeRoot, "memory-create", map[string]any{
 		"workspace_id": wid, "content": "branchtest all branches", "kind": "note",
-	}))
+	})).Memory
+	if allBranches.Branches != nil {
+		t.Fatalf("unrestricted branches = %#v, want nil", allBranches.Branches)
+	}
 
 	search := func(branch *string) int {
 		request := map[string]any{"workspace_id": wid, "query": "branchtest"}

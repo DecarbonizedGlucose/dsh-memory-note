@@ -768,8 +768,11 @@ async function describeApproval(
       return `clear all memories and history of this workspace`;
     case "workspace_delete":
       return `delete this workspace's mapping and memory database (the user's directory is untouched)`;
-    case "memory_create":
-      return `record new memory: "${short(text(request.content))}"`;
+    case "memory_create": {
+      const branches = Array.isArray(request.branches) ? request.branches : [];
+      const tail = branches.length > 0 ? ` (branches: ${branches.join(", ")})` : "";
+      return `record new memory: "${short(text(request.content))}"${tail}`;
+    }
     case "memory_update": {
       const previous = await currentContent(request, exec, config);
       const parts: string[] = [];
@@ -786,8 +789,11 @@ async function describeApproval(
     }
     case "memory_supersede": {
       const previous = await currentContent(request, exec, config);
-      const replacement = (request.new as Record<string, unknown> | undefined)?.content;
-      return `replace memory "${short(previous)}" with: "${short(text(replacement))}"`;
+      const next = (request.new as Record<string, unknown> | undefined) ?? {};
+      const replacement = next.content;
+      const branches = Array.isArray(next.branches) ? next.branches : [];
+      const tail = branches.length > 0 ? ` (branches: ${branches.join(", ")})` : "";
+      return `replace memory "${short(previous)}" with: "${short(text(replacement))}"${tail}`;
     }
     case "memory_invalidate": {
       const previous = await currentContent(request, exec, config);

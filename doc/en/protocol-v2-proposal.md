@@ -555,7 +555,7 @@ Request:
 {"workspace_id": 1, "memory_id": "mem_...", "from_version": 1, "to_version": 2}
 ```
 
-Compares two existing versions of one memory. Either version may be the current version or a historical version; they must differ. Returns only the fields that changed, each with `from` and `to`; fields not listed are identical. `content`/`kind`/`label`/`source`/`metadata`/`state` participate.
+Compares two existing versions of one memory. Either version may be the current version or a historical version; they must differ. Returns only the fields that changed, each with `from` and `to`; fields not listed are identical. `content`/`kind`/`label`/`branches`/`source`/`metadata`/`state` participate.
 
 Response data:
 

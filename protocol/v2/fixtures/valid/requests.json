@@ -218,5 +218,39 @@
       "expected_version": 2,
       "reason": "no longer true"
     }
+  },
+  {
+    "name": "memory-create-branches",
+    "command": "memory-create",
+    "request": {
+      "workspace_id": 1,
+      "content": "Use SQLite.",
+      "kind": "fact",
+      "branches": [
+        "main"
+      ]
+    }
+  },
+  {
+    "name": "memory-update-branches",
+    "command": "memory-update",
+    "request": {
+      "workspace_id": 1,
+      "memory_id": "mem_example",
+      "expected_version": 1,
+      "branches": [
+        "main",
+        "dev"
+      ]
+    }
+  },
+  {
+    "name": "memory-search-branch",
+    "command": "memory-search",
+    "request": {
+      "workspace_id": 1,
+      "query": "sqlite",
+      "branch": "main"
+    }
   }
 ]

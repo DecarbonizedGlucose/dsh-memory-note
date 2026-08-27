@@ -123,6 +123,9 @@ func cleanBranches(values []string) ([]string, error) {
 	if len(result) > 64 {
 		return nil, protocol.Invalid("branches has too many items")
 	}
+	if len(result) == 0 {
+		return nil, nil
+	}
 	return result, nil
 }
 
@@ -144,7 +147,7 @@ func matchesBranch(branches []string, branch *string) bool {
 // diffMemories compares two versions of the same memory and returns only the
 // fields that differ, each with from and to.
 func diffMemories(from, to protocol.Memory) []protocol.MemoryDiffChange {
-	changes := make([]protocol.MemoryDiffChange, 0, 6)
+	changes := make([]protocol.MemoryDiffChange, 0, 7)
 	compare := func(field string, fromValue, toValue any) {
 		if !reflect.DeepEqual(fromValue, toValue) {
 			changes = append(changes, protocol.MemoryDiffChange{Field: field, From: fromValue, To: toValue})
@@ -153,6 +156,7 @@ func diffMemories(from, to protocol.Memory) []protocol.MemoryDiffChange {
 	compare("content", from.Content, to.Content)
 	compare("kind", from.Kind, to.Kind)
 	compare("label", from.Label, to.Label)
+	compare("branches", from.Branches, to.Branches)
 	compare("source", from.Source, to.Source)
 	compare("metadata", from.Metadata, to.Metadata)
 	compare("state", from.State, to.State)

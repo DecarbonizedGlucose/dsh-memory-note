@@ -74,11 +74,12 @@ test(
     assert.equal((registered as { created: boolean }).created, true);
 
     const created = await byName("memory_create").execute(
-      { content: "Use SQLite for local storage.", kind: "fact" },
+      { content: "Use SQLite for local storage.", kind: "fact", branches: ["main"] },
       exec(workspace),
     );
-    const memory = (created as { memory: { memory_id: string; version: number } }).memory;
+    const memory = (created as { memory: { memory_id: string; version: number; branches: string[] } }).memory;
     assert.equal(memory.version, 1);
+    assert.deepEqual(memory.branches, ["main"]);
 
     // §4: a search hit carries a citation for version-safe writes.
     const searched = await byName("memory_search").execute({ query: "sqlite" }, exec(workspace));

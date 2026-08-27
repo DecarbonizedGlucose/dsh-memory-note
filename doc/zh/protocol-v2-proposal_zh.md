@@ -554,7 +554,7 @@ Request：
 {"workspace_id": 1, "memory_id": "mem_...", "from_version": 1, "to_version": 2}
 ```
 
-比较同一记忆的两个已存在版本。任一版本可以是当前版本或历史版本；两者必须不同。只返回发生变化的字段，每项带 `from` 与 `to`；未列出的字段表示相同。参与比较的字段：content/kind/label/source/metadata/state。
+比较同一记忆的两个已存在版本。任一版本可以是当前版本或历史版本；两者必须不同。只返回发生变化的字段，每项带 `from` 与 `to`；未列出的字段表示相同。参与比较的字段：content/kind/label/branches/source/metadata/state。
 
 Response data：
 

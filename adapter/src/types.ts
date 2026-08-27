@@ -9,6 +9,7 @@ export interface Memory {
   content: string;
   kind: "fact" | "note";
   label: string | null;
+  branches: string[] | null;
   source: string[];
   metadata: Record<string, unknown>;
   state: MemoryState;
@@ -24,6 +25,10 @@ export interface SearchHit {
   kind: "fact" | "note";
   label: string | null;
   version: number;
+  citation: {
+    memory_id: string;
+    version: number;
+  };
   snippet: string;
   score: number;
   matched_terms: number;
