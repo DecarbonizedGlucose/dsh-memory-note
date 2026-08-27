@@ -19,7 +19,7 @@ import { apply } from "../src/index.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, "..", "..");
-const enabled = process.env.RUN_INTEGRATION === "1";
+const enabled = process.env.RUN_INTEGRATION === "1" || process.env.npm_lifecycle_event === "test:integration";
 
 interface RegisteredTool {
   name: string;
