@@ -107,7 +107,10 @@ pnpm test:integration
 ```
 
 `pnpm check` runs type checking and unit tests with a scripted fake core.
-`pnpm test:integration` builds the Go core and exercises a complete lifecycle.
+`pnpm test:integration` builds the real Go core in a temporary directory, loads
+the adapter with simulated Harness tool and approval services, and exercises a
+complete lifecycle against an isolated temporary HOME. It does not start DSH or
+a browser profile.
 
 Harness packages are peer dependencies in production. They are also listed as
 development dependencies so this directory can type-check and test on its own.

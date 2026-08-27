@@ -6,7 +6,7 @@
 // and its build cache writable (set GOCACHE if the default is read-only).
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -27,18 +27,22 @@ interface RegisteredTool {
 }
 
 test(
-  "full lifecycle against the Go core",
+  "adapter lifecycle against the real Go core with simulated Harness services",
   { skip: !enabled },
-  async () => {
-    const binary = path.join(mkdtempSync(path.join(os.tmpdir(), "dsh-core-")), "dsh-memory-note");
+  async (t) => {
+    const tempRoot = mkdtempSync(path.join(os.tmpdir(), "dsh-memory-note-integration-"));
+    t.after(() => rmSync(tempRoot, { recursive: true, force: true }));
+
+    const binary = path.join(tempRoot, "dsh-memory-note");
     execFileSync("go", ["build", "-o", binary, "./cmd/dsh-memory-note"], {
       cwd: repoRoot,
       env: process.env,
       stdio: "pipe",
     });
 
-    const home = path.join(mkdtempSync(path.join(os.tmpdir(), "dsh-home-")), "home");
-    const workspace = mkdtempSync(path.join(os.tmpdir(), "dsh-workspace-"));
+    const home = path.join(tempRoot, "home");
+    const workspace = path.join(tempRoot, "workspace");
+    mkdirSync(workspace);
 
     const tools: RegisteredTool[] = [];
     const approvals: string[] = [];
@@ -82,7 +86,7 @@ test(
     assert.deepEqual(memory.branches, ["main"]);
 
     // §4: a search hit carries a citation for version-safe writes.
-    const searched = await byName("memory_search").execute({ query: "sqlite" }, exec(workspace));
+    const searched = await byName("memory_search").execute({ query: "sqlite", branch: "main" }, exec(workspace));
     const hits = (searched as { memories: Array<{ memory_id: string; citation: { memory_id: string; version: number } }> }).memories;
     assert.equal(hits.length, 1);
     assert.equal(hits[0].citation.version, 1);
