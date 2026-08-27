@@ -35,6 +35,20 @@ and registers it into the profile via `dsh plugin ... add link:`.
 After installing, make sure your `GOBIN` (`$(go env GOPATH)/bin`) is on PATH
 and restart the profile (`dsh --profile <name>`) so the tools load.
 
+After pulling later changes, rebuild the core and linked adapter without
+registering the plugin again:
+
+```sh
+scripts/update.sh                 # Unix-like
+```
+
+```powershell
+.\scripts\update.ps1             # Windows
+```
+
+The update script does not modify memory data. If a release changes the
+internal SQL schema, the core fails closed instead of migrating existing data.
+
 Uninstall:
 
 ```sh
@@ -59,12 +73,13 @@ dsh-memory-note <subcommand> '<json-request>'
 
 - Workspace: `workspace-resolve`, `workspace-register`, `workspace-rebind`,
   `workspace-clear`, `workspace-delete`
-- Memory: `memory-search`, `memory-list`, `memory-get`, `memory-create`,
-  `memory-update`, `memory-supersede`, `memory-invalidate`, `memory-delete`
+- Memory: `memory-search`, `memory-list`, `memory-get`, `memory-history`,
+  `memory-diff`, `memory-create`, `memory-update`, `memory-supersede`,
+  `memory-invalidate`, `memory-delete`
 - Internal: `version`, `help`
 
 The full JSON contract is in
-[`doc/en/protocol-v1-proposal.md`](doc/en/protocol-v1-proposal.md).
+[`doc/en/protocol-v2-proposal.md`](doc/en/protocol-v2-proposal.md).
 
 ## Storage layout
 

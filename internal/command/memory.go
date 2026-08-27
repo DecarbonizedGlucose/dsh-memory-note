@@ -22,7 +22,7 @@ func memorySearch(ctx context.Context, storeRoot, sessionID, raw string) (protoc
 	if err := protocol.Decode(raw, &request); err != nil {
 		return protocol.MemorySearchData{}, err
 	}
-	terms, types, scopes, limit, err := checkSearch(request)
+	terms, kinds, labels, limit, err := checkSearch(request)
 	if err != nil {
 		return protocol.MemorySearchData{}, err
 	}
@@ -42,7 +42,19 @@ func memorySearch(ctx context.Context, storeRoot, sessionID, raw string) (protoc
 		return protocol.MemorySearchData{}, err
 	}
 	defer tx.Rollback()
-	memories, err := tx.Active(ctx)
+	query := buildFTSQuery(terms)
+	candidateLimit := limit * 4
+	if candidateLimit < 32 {
+		candidateLimit = 32
+	}
+	options := memorystore.SearchOptions{Query: query, Kinds: kinds, Labels: labels, Limit: candidateLimit}
+	if request.Filter != nil {
+		options.CreatedAfter = request.Filter.CreatedAfter
+		options.CreatedBefore = request.Filter.CreatedBefore
+		options.UpdatedAfter = request.Filter.UpdatedAfter
+		options.UpdatedBefore = request.Filter.UpdatedBefore
+	}
+	candidates, err := tx.Search(ctx, options)
 	if err != nil {
 		return protocol.MemorySearchData{}, err
 	}
@@ -51,17 +63,23 @@ func memorySearch(ctx context.Context, storeRoot, sessionID, raw string) (protoc
 	}
 
 	hits := make([]protocol.SearchHit, 0)
-	for _, item := range memories {
-		if !matchesFilter(item, request.Filter, types, scopes) {
+	for _, candidate := range candidates {
+		item := candidate.Memory
+		if !matchesBranch(item.Branches, request.Branch) {
 			continue
 		}
-		score, matched := matchTerms(item, terms)
-		if len(terms) != 0 && !matched {
+		matchedTerms := countMatchedTerms(item, terms)
+		if len(terms) != 0 && matchedTerms == 0 {
 			continue
+		}
+		score := 0.0
+		if len(terms) != 0 {
+			score = -candidate.Rank
 		}
 		hits = append(hits, protocol.SearchHit{
-			ID: item.ID, Type: item.Type, Scope: item.Scope, Version: item.Version,
-			Snippet: snippet(item.Content), Score: score, UpdatedAt: item.UpdatedAt,
+			ID: item.ID, Kind: item.Kind, Label: item.Label, Version: item.Version,
+			Citation: protocol.Citation{MemoryID: item.ID, Version: item.Version},
+			Snippet:  snippet(item.Content), Score: score, MatchedTerms: matchedTerms, UpdatedAt: item.UpdatedAt,
 		})
 	}
 	sort.Slice(hits, func(i, j int) bool {
@@ -153,7 +171,7 @@ func memoryList(ctx context.Context, storeRoot, sessionID, raw string) (protocol
 	}
 	for _, item := range rows {
 		data.Memories = append(data.Memories, protocol.ListItem{
-			ID: item.ID, Type: item.Type, Scope: item.Scope, State: item.State, Version: item.Version,
+			ID: item.ID, Kind: item.Kind, Label: item.Label, State: item.State, Version: item.Version,
 			Supersedes: item.Supersedes, SupersededBy: item.SupersededBy,
 			CreatedAt: item.CreatedAt, UpdatedAt: item.UpdatedAt,
 		})
@@ -218,13 +236,23 @@ func memoryGet(ctx context.Context, storeRoot, sessionID, raw string) (protocol.
 	if err := checkMemoryRef(request.WorkspaceID, request.MemoryID); err != nil {
 		return protocol.MemoryGetData{}, err
 	}
-	item, run, store, tx, err := getMemory(ctx, storeRoot, sessionID, request.WorkspaceID, request.MemoryID, true)
+	if request.Version != nil && (*request.Version < 1 || *request.Version > protocol.MaxSafeInteger) {
+		return protocol.MemoryGetData{}, protocol.Invalid("version must be a positive safe integer")
+	}
+	current, run, store, tx, err := getMemory(ctx, storeRoot, sessionID, request.WorkspaceID, request.MemoryID, true)
 	if err != nil {
 		return protocol.MemoryGetData{}, err
 	}
 	defer run.Release()
 	defer store.Close()
 	defer tx.Rollback()
+	item := current
+	if request.Version != nil && *request.Version != current.Version {
+		item, err = tx.Version(ctx, request.WorkspaceID, request.MemoryID, *request.Version)
+		if err != nil {
+			return protocol.MemoryGetData{}, err
+		}
+	}
 	if err := tx.Commit(); err != nil {
 		return protocol.MemoryGetData{}, protocol.NewError(protocol.CodeInternal, "cannot finish memory read")
 	}
@@ -232,6 +260,103 @@ func memoryGet(ctx context.Context, storeRoot, sessionID, raw string) (protocol.
 		return protocol.MemoryGetData{}, err
 	}
 	return protocol.MemoryGetData{MemoryResult: protocol.MemoryResult{Memory: item}}, nil
+}
+
+func memoryHistory(ctx context.Context, storeRoot, sessionID, raw string) (protocol.MemoryHistoryData, error) {
+	var request protocol.MemoryHistoryRequest
+	if err := protocol.Decode(raw, &request); err != nil {
+		return protocol.MemoryHistoryData{}, err
+	}
+	if err := checkMemoryRef(request.WorkspaceID, request.MemoryID); err != nil {
+		return protocol.MemoryHistoryData{}, err
+	}
+	current, run, store, tx, err := getMemory(ctx, storeRoot, sessionID, request.WorkspaceID, request.MemoryID, true)
+	if err != nil {
+		return protocol.MemoryHistoryData{}, err
+	}
+	defer run.Release()
+	defer store.Close()
+	defer tx.Rollback()
+	archived, err := tx.Versions(ctx, request.WorkspaceID, request.MemoryID)
+	if err != nil {
+		return protocol.MemoryHistoryData{}, err
+	}
+	action, err := tx.LatestAction(ctx, request.WorkspaceID, request.MemoryID)
+	if err != nil {
+		return protocol.MemoryHistoryData{}, err
+	}
+	versions := make([]protocol.HistoryItem, 0, len(archived)+1)
+	// An archive row's action is the operation that archived it — which is
+	// the operation that produced the next version. So version k's producing
+	// action is the archive action of the row before it, and v1 is create.
+	for index, item := range archived {
+		producing := "create"
+		if index > 0 {
+			producing = archived[index-1].Action
+		}
+		versions = append(versions, protocol.HistoryItem{
+			Version: item.Version, Action: producing, State: item.State,
+			UpdatedAt: item.UpdatedAt, ArchivedAt: item.ArchivedAt,
+		})
+	}
+	versions = append(versions, protocol.HistoryItem{
+		Version: current.Version, Action: action, State: current.State,
+		UpdatedAt: current.UpdatedAt, ArchivedAt: nil,
+	})
+	if err := tx.Commit(); err != nil {
+		return protocol.MemoryHistoryData{}, protocol.NewError(protocol.CodeInternal, "cannot finish memory history")
+	}
+	if err := run.Commit(ctx); err != nil {
+		return protocol.MemoryHistoryData{}, err
+	}
+	return protocol.MemoryHistoryData{Versions: versions}, nil
+}
+
+func memoryDiff(ctx context.Context, storeRoot, sessionID, raw string) (protocol.MemoryDiffData, error) {
+	var request protocol.MemoryDiffRequest
+	if err := protocol.Decode(raw, &request); err != nil {
+		return protocol.MemoryDiffData{}, err
+	}
+	if err := checkMemoryRef(request.WorkspaceID, request.MemoryID); err != nil {
+		return protocol.MemoryDiffData{}, err
+	}
+	if request.FromVersion == request.ToVersion {
+		return protocol.MemoryDiffData{}, protocol.Invalid("from_version and to_version must differ")
+	}
+	for _, value := range []int64{request.FromVersion, request.ToVersion} {
+		if value < 1 || value > protocol.MaxSafeInteger {
+			return protocol.MemoryDiffData{}, protocol.Invalid("version must be a positive safe integer")
+		}
+	}
+	current, run, store, tx, err := getMemory(ctx, storeRoot, sessionID, request.WorkspaceID, request.MemoryID, true)
+	if err != nil {
+		return protocol.MemoryDiffData{}, err
+	}
+	defer run.Release()
+	defer store.Close()
+	defer tx.Rollback()
+	resolve := func(version int64) (protocol.Memory, error) {
+		if version == current.Version {
+			return current, nil
+		}
+		return tx.Version(ctx, request.WorkspaceID, request.MemoryID, version)
+	}
+	from, err := resolve(request.FromVersion)
+	if err != nil {
+		return protocol.MemoryDiffData{}, err
+	}
+	to, err := resolve(request.ToVersion)
+	if err != nil {
+		return protocol.MemoryDiffData{}, err
+	}
+	changes := diffMemories(from, to)
+	if err := tx.Commit(); err != nil {
+		return protocol.MemoryDiffData{}, protocol.NewError(protocol.CodeInternal, "cannot finish memory diff")
+	}
+	if err := run.Commit(ctx); err != nil {
+		return protocol.MemoryDiffData{}, err
+	}
+	return protocol.MemoryDiffData{FromVersion: request.FromVersion, ToVersion: request.ToVersion, Changes: changes}, nil
 }
 
 func memoryCreate(ctx context.Context, storeRoot, sessionID, raw string) (protocol.MemoryCreateData, error) {
@@ -243,6 +368,10 @@ func memoryCreate(ctx context.Context, storeRoot, sessionID, raw string) (protoc
 		return protocol.MemoryCreateData{}, err
 	}
 	input, err := cleanInput(request.MemoryInput)
+	if err != nil {
+		return protocol.MemoryCreateData{}, err
+	}
+	reason, err := cleanReason(request.Reason)
 	if err != nil {
 		return protocol.MemoryCreateData{}, err
 	}
@@ -260,6 +389,9 @@ func memoryCreate(ctx context.Context, storeRoot, sessionID, raw string) (protoc
 	if err := tx.Insert(ctx, item); err != nil {
 		return protocol.MemoryCreateData{}, err
 	}
+	if err := tx.InsertEvent(ctx, request.WorkspaceID, item.ID, "create", nil, &item.Version, "", reason, item.CreatedAt.Time); err != nil {
+		return protocol.MemoryCreateData{}, err
+	}
 	if err := commitMemory(ctx, run, tx); err != nil {
 		return protocol.MemoryCreateData{}, err
 	}
@@ -274,10 +406,14 @@ func memoryUpdate(ctx context.Context, storeRoot, sessionID, raw string) (protoc
 	if err := checkTarget(request.WorkspaceID, request.MemoryID, request.ExpectedVersion); err != nil {
 		return protocol.MemoryUpdateData{}, err
 	}
-	if request.Content == nil && request.Type == nil && request.Scope == nil && request.Source == nil && request.Metadata == nil {
+	if request.Content == nil && request.Kind == nil && request.Label == nil && request.Source == nil && request.Metadata == nil {
 		return protocol.MemoryUpdateData{}, protocol.Invalid("at least one memory field is required")
 	}
 	if err := cleanUpdate(&request); err != nil {
+		return protocol.MemoryUpdateData{}, err
+	}
+	reason, err := cleanReason(request.Reason)
+	if err != nil {
 		return protocol.MemoryUpdateData{}, err
 	}
 	item, run, store, tx, err := getMemory(ctx, storeRoot, sessionID, request.WorkspaceID, request.MemoryID, false)
@@ -294,7 +430,10 @@ func memoryUpdate(ctx context.Context, storeRoot, sessionID, raw string) (protoc
 	applyUpdate(&item, request)
 	item.Version++
 	item.UpdatedAt = now()
-	if err := tx.Archive(ctx, previous, time.Now().Unix()); err != nil {
+	if err := tx.Archive(ctx, previous, "update", time.Now().Unix()); err != nil {
+		return protocol.MemoryUpdateData{}, err
+	}
+	if err := tx.InsertEvent(ctx, request.WorkspaceID, item.ID, "update", &previous.Version, &item.Version, "", reason, item.UpdatedAt.Time); err != nil {
 		return protocol.MemoryUpdateData{}, err
 	}
 	if err := tx.Update(ctx, item, previous.Version); err != nil {
@@ -318,6 +457,10 @@ func memorySupersede(ctx context.Context, storeRoot, sessionID, raw string) (pro
 	if err != nil {
 		return protocol.MemorySupersedeData{}, err
 	}
+	reason, err := cleanReason(request.Reason)
+	if err != nil {
+		return protocol.MemorySupersedeData{}, err
+	}
 	old, run, store, tx, err := getMemory(ctx, storeRoot, sessionID, request.WorkspaceID, request.MemoryID, false)
 	if err != nil {
 		return protocol.MemorySupersedeData{}, err
@@ -337,10 +480,16 @@ func memorySupersede(ctx context.Context, storeRoot, sessionID, raw string) (pro
 	old.Version++
 	old.SupersededBy = &newItem.ID
 	old.UpdatedAt = newItem.CreatedAt
-	if err := tx.Archive(ctx, previous, time.Now().Unix()); err != nil {
+	if err := tx.Archive(ctx, previous, "supersede", time.Now().Unix()); err != nil {
 		return protocol.MemorySupersedeData{}, err
 	}
 	if err := tx.Insert(ctx, newItem); err != nil {
+		return protocol.MemorySupersedeData{}, err
+	}
+	if err := tx.InsertEvent(ctx, request.WorkspaceID, old.ID, "supersede", &previous.Version, &old.Version, newItem.ID, reason, old.UpdatedAt.Time); err != nil {
+		return protocol.MemorySupersedeData{}, err
+	}
+	if err := tx.InsertEvent(ctx, request.WorkspaceID, newItem.ID, "create", nil, &newItem.Version, "", "", newItem.CreatedAt.Time); err != nil {
 		return protocol.MemorySupersedeData{}, err
 	}
 	if err := tx.Update(ctx, old, previous.Version); err != nil {
@@ -360,6 +509,10 @@ func memoryInvalidate(ctx context.Context, storeRoot, sessionID, raw string) (pr
 	if err := checkTarget(request.WorkspaceID, request.MemoryID, request.ExpectedVersion); err != nil {
 		return protocol.MemoryInvalidateData{}, err
 	}
+	reason, err := cleanReason(request.Reason)
+	if err != nil {
+		return protocol.MemoryInvalidateData{}, err
+	}
 	item, run, store, tx, err := getMemory(ctx, storeRoot, sessionID, request.WorkspaceID, request.MemoryID, false)
 	if err != nil {
 		return protocol.MemoryInvalidateData{}, err
@@ -374,7 +527,10 @@ func memoryInvalidate(ctx context.Context, storeRoot, sessionID, raw string) (pr
 	item.State = protocol.MemoryInvalid
 	item.Version++
 	item.UpdatedAt = now()
-	if err := tx.Archive(ctx, previous, time.Now().Unix()); err != nil {
+	if err := tx.Archive(ctx, previous, "invalidate", time.Now().Unix()); err != nil {
+		return protocol.MemoryInvalidateData{}, err
+	}
+	if err := tx.InsertEvent(ctx, request.WorkspaceID, item.ID, "invalidate", &previous.Version, &item.Version, "", reason, item.UpdatedAt.Time); err != nil {
 		return protocol.MemoryInvalidateData{}, err
 	}
 	if err := tx.Update(ctx, item, previous.Version); err != nil {
@@ -471,7 +627,7 @@ func newMemory(workspaceID int64, input protocol.MemoryInput, supersedes *string
 	}
 	created := now()
 	return protocol.Memory{
-		ID: id, WorkspaceID: workspaceID, Content: input.Content, Type: input.Type, Scope: input.Scope,
+		ID: id, WorkspaceID: workspaceID, Content: input.Content, Kind: input.Kind, Label: input.Label, Branches: input.Branches,
 		Source: input.Source, Metadata: input.Metadata, State: protocol.MemoryActive, Version: 1,
 		Supersedes: supersedes, CreatedAt: created, UpdatedAt: created,
 	}, nil
@@ -513,24 +669,31 @@ func checkWritable(item protocol.Memory, expectedVersion int64) error {
 
 func cleanUpdate(request *protocol.MemoryUpdateRequest) error {
 	if request.Content != nil {
-		cleaned, err := cleanInput(protocol.MemoryInput{Content: *request.Content})
-		if err != nil {
-			return err
+		if !utf8.ValidString(*request.Content) || strings.TrimSpace(*request.Content) == "" ||
+			strings.ContainsRune(*request.Content, 0) || len(*request.Content) > 64*1024 {
+			return protocol.Invalid("content is invalid")
 		}
-		request.Content = &cleaned.Content
 	}
 	var err error
-	if request.Type != nil {
-		_, err = cleanLabel(request.Type, 128, "type")
+	if request.Kind != nil {
+		if !protocol.ValidMemoryKind(strings.TrimSpace(*request.Kind)) {
+			return protocol.Invalid("kind must be fact or note")
+		}
+		trimmed := strings.TrimSpace(*request.Kind)
+		request.Kind = &trimmed
+	}
+	if request.Label != nil {
+		_, err = cleanLabel(request.Label, 256, "label")
 		if err != nil {
 			return err
 		}
 	}
-	if request.Scope != nil {
-		_, err = cleanLabel(request.Scope, 256, "scope")
+	if request.Branches != nil {
+		cleaned, err := cleanBranches(*request.Branches)
 		if err != nil {
 			return err
 		}
+		request.Branches = &cleaned
 	}
 	if request.Source != nil {
 		cleaned, err := cleanSource(*request.Source)
@@ -552,11 +715,14 @@ func applyUpdate(item *protocol.Memory, request protocol.MemoryUpdateRequest) {
 	if request.Content != nil {
 		item.Content = *request.Content
 	}
-	if request.Type != nil {
-		item.Type, _ = cleanLabel(request.Type, 128, "type")
+	if request.Kind != nil {
+		item.Kind = *request.Kind
 	}
-	if request.Scope != nil {
-		item.Scope, _ = cleanLabel(request.Scope, 256, "scope")
+	if request.Label != nil {
+		item.Label, _ = cleanLabel(request.Label, 256, "label")
+	}
+	if request.Branches != nil {
+		item.Branches = *request.Branches
 	}
 	if request.Source != nil {
 		item.Source = *request.Source
@@ -571,25 +737,30 @@ func checkSearch(request protocol.MemorySearchRequest) ([]string, []string, []st
 		return nil, nil, nil, 0, err
 	}
 	terms := words(request.Query)
-	types, scopes := []string(nil), []string(nil)
+	kinds, labels := []string(nil), []string(nil)
 	if request.Filter != nil {
-		if request.Filter.Types != nil {
-			types = cleanLabels(request.Filter.Types)
-			if len(types) == 0 {
-				return nil, nil, nil, 0, protocol.Invalid("filter types must not be empty")
+		if request.Filter.Kinds != nil {
+			kinds = cleanLabels(request.Filter.Kinds)
+			if len(kinds) == 0 {
+				return nil, nil, nil, 0, protocol.Invalid("filter kinds must not be empty")
+			}
+			for _, kind := range kinds {
+				if !protocol.ValidMemoryKind(kind) {
+					return nil, nil, nil, 0, protocol.Invalid("filter kind must be fact or note")
+				}
 			}
 		}
-		if request.Filter.Scopes != nil {
-			scopes = cleanLabels(request.Filter.Scopes)
-			if len(scopes) == 0 {
-				return nil, nil, nil, 0, protocol.Invalid("filter scopes must not be empty")
+		if request.Filter.Labels != nil {
+			labels = cleanLabels(request.Filter.Labels)
+			if len(labels) == 0 {
+				return nil, nil, nil, 0, protocol.Invalid("filter labels must not be empty")
 			}
 		}
 		if invalidRange(request.Filter.CreatedAfter, request.Filter.CreatedBefore) || invalidRange(request.Filter.UpdatedAfter, request.Filter.UpdatedBefore) {
 			return nil, nil, nil, 0, protocol.Invalid("search time range is invalid")
 		}
 	}
-	if len(terms) == 0 && len(types) == 0 && len(scopes) == 0 && !hasTimeFilter(request.Filter) {
+	if len(terms) == 0 && len(kinds) == 0 && len(labels) == 0 && !hasTimeFilter(request.Filter) {
 		return nil, nil, nil, 0, protocol.Invalid("query or filter is required")
 	}
 	limit := 8
@@ -599,7 +770,7 @@ func checkSearch(request protocol.MemorySearchRequest) ([]string, []string, []st
 	if limit < 1 || limit > 20 {
 		return nil, nil, nil, 0, protocol.Invalid("limit must be between 1 and 20")
 	}
-	return terms, types, scopes, limit, nil
+	return terms, kinds, labels, limit, nil
 }
 
 func invalidRange(after, before *protocol.Timestamp) bool {
@@ -610,42 +781,19 @@ func hasTimeFilter(filter *protocol.SearchFilter) bool {
 	return filter != nil && (filter.CreatedAfter != nil || filter.CreatedBefore != nil || filter.UpdatedAfter != nil || filter.UpdatedBefore != nil)
 }
 
-func matchesFilter(item protocol.Memory, filter *protocol.SearchFilter, types, scopes []string) bool {
-	if filter == nil {
-		return true
+func buildFTSQuery(terms []string) string {
+	quoted := make([]string, 0, len(terms))
+	for _, term := range terms {
+		quoted = append(quoted, `"`+strings.ReplaceAll(term, `"`, `""`)+`"`)
 	}
-	if len(types) != 0 && !containsLabel(types, item.Type) || len(scopes) != 0 && !containsLabel(scopes, item.Scope) {
-		return false
-	}
-	return within(item.CreatedAt, filter.CreatedAfter, filter.CreatedBefore) && within(item.UpdatedAt, filter.UpdatedAfter, filter.UpdatedBefore)
+	return strings.Join(quoted, " OR ")
 }
 
-func containsLabel(values []string, value *string) bool {
-	if value == nil {
-		return false
-	}
-	for _, candidate := range values {
-		if candidate == *value {
-			return true
-		}
-	}
-	return false
-}
-
-func within(value protocol.Timestamp, after, before *protocol.Timestamp) bool {
-	return (after == nil || !value.Before(after.Time)) && (before == nil || !value.After(before.Time))
-}
-
-func matchTerms(item protocol.Memory, terms []string) (float64, bool) {
-	if len(terms) == 0 {
-		return 0, true
-	}
+func countMatchedTerms(item protocol.Memory, terms []string) int {
 	text := asciiFold(item.Content)
-	if item.Type != nil {
-		text += "\n" + asciiFold(*item.Type)
-	}
-	if item.Scope != nil {
-		text += "\n" + asciiFold(*item.Scope)
+	text += "\n" + asciiFold(item.Kind)
+	if item.Label != nil {
+		text += "\n" + asciiFold(*item.Label)
 	}
 	matched := 0
 	for _, term := range terms {
@@ -653,7 +801,7 @@ func matchTerms(item protocol.Memory, terms []string) (float64, bool) {
 			matched++
 		}
 	}
-	return float64(matched) / float64(len(terms)), matched != 0
+	return matched
 }
 
 func snippet(content string) string {

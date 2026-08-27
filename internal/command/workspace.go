@@ -157,7 +157,7 @@ func workspaceDelete(ctx context.Context, storeRoot, sessionID, raw string) (pro
 func removeMemoryFiles(storeRoot string, workspaceID int64) error {
 	path := storage.MemoryDB(storeRoot, workspaceID)
 	// Best-effort sidecars first, then the main file, which must go away.
-	for _, target := range []string{path + "-wal", path + "-shm"} {
+	for _, target := range []string{path + "-wal", path + "-shm", path + "-journal"} {
 		if info, err := os.Lstat(target); err == nil {
 			if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
 				return protocol.NewError(protocol.CodeWorkspaceBroken, "workspace memory file is not trusted")

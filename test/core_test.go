@@ -135,7 +135,7 @@ func TestConcurrentProcessesUseOneStore(t *testing.T) {
 		go func(content string) {
 			defer group.Done()
 			response, err := runCore(binary, home, "memory-create", map[string]any{
-				"workspace_id": 1, "content": content,
+				"workspace_id": 1, "content": content, "kind": "note",
 			})
 			if err == nil {
 				responses <- response
@@ -195,7 +195,7 @@ func TestCoreLifecycleWithTmpHome(t *testing.T) {
 	}
 
 	created := mustRun(t, binary, home, "memory-create", map[string]any{
-		"workspace_id": 1, "content": "Use SQLite.", "type": "decision", "scope": "storage",
+		"workspace_id": 1, "content": "Use SQLite.", "kind": "fact", "label": "storage",
 	})
 	memory := created.Data["memory"].(map[string]any)
 	id := memory["memory_id"].(string)
@@ -216,7 +216,7 @@ func TestCoreLifecycleWithTmpHome(t *testing.T) {
 
 	superseded := mustRun(t, binary, home, "memory-supersede", map[string]any{
 		"workspace_id": 1, "memory_id": id, "expected_version": 2,
-		"new": map[string]any{"content": "Use PostgreSQL."},
+		"new": map[string]any{"content": "Use PostgreSQL.", "kind": "fact"},
 	})
 	old := superseded.Data["old"].(map[string]any)
 	newItem := superseded.Data["new"].(map[string]any)
@@ -279,7 +279,7 @@ func TestWorkspaceDeleteRacesReads(t *testing.T) {
 	workspace := t.TempDir()
 
 	mustRun(t, binary, home, "workspace-register", map[string]any{"path": workspace})
-	created := mustRun(t, binary, home, "memory-create", map[string]any{"workspace_id": 1, "content": "race target"})
+	created := mustRun(t, binary, home, "memory-create", map[string]any{"workspace_id": 1, "content": "race target", "kind": "note"})
 	id := created.Data["memory"].(map[string]any)["memory_id"].(string)
 
 	const reads = 40
@@ -337,7 +337,7 @@ func TestManyAgentsOneWorkspace(t *testing.T) {
 			defer group.Done()
 			for i := 0; i < perAgent; i++ {
 				response, err := runCore(binary, home, "memory-create", map[string]any{
-					"workspace_id": 1, "content": fmt.Sprintf("agent-%d-note-%d", agent, i),
+					"workspace_id": 1, "content": fmt.Sprintf("agent-%d-note-%d", agent, i), "kind": "note",
 				})
 				if err != nil || !response.OK {
 					writeErrors <- fmt.Sprintf("agent %d create %d: err=%v response=%#v", agent, i, err, response)
@@ -372,7 +372,7 @@ func TestManyAgentsOneWorkspace(t *testing.T) {
 	}
 
 	// Contended update: exactly one winner, the rest version_conflict.
-	contended := mustRun(t, binary, home, "memory-create", map[string]any{"workspace_id": 1, "content": "contended"})
+	contended := mustRun(t, binary, home, "memory-create", map[string]any{"workspace_id": 1, "content": "contended", "kind": "note"})
 	id := contended.Data["memory"].(map[string]any)["memory_id"].(string)
 	const updaters = 8
 	outcomes := make(chan processResponse, updaters)
@@ -454,7 +454,7 @@ func TestManyAgentsSeparateWorkspaces(t *testing.T) {
 				// Single-token per-agent prefix: hyphenated or multi-word
 				// content would be split into shared keywords.
 				response, err := runCore(binary, home, "memory-create", map[string]any{
-					"workspace_id": ids[agent], "content": fmt.Sprintf("agent%d mem %d", agent, i),
+					"workspace_id": ids[agent], "content": fmt.Sprintf("agent%d mem %d", agent, i), "kind": "note",
 				})
 				if err != nil || !response.OK {
 					workErrors <- fmt.Sprintf("agent %d create %d: err=%v response=%#v", agent, i, err, response)

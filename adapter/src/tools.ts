@@ -9,7 +9,11 @@
 import type { Context } from "@deepseek-ai/cordis";
 import { defineTool, type ToolExecution } from "@deepseek-ai/dsh-tools";
 import type { ApprovalOutcome } from "@deepseek-ai/dsh-user-approval";
-import { CoreError, CoreErrorCode, runCore, type CoreOptions, type JsonValue } from "./core.js";
+import { readFileSync } from "node:fs";
+import path from "node:path";
+import { checkCoreVersion, CoreError, CoreErrorCode, runCore, type CoreOptions, type JsonValue } from "./core.js";
+import { boundTotal, RENDER_BUDGET, TRUST_NOTICE, truncateUtf8 } from "./render-bounds.js";
+import { protocolMajor } from "./version.js";
 
 export interface MemoryNoteConfig {
   binaryPath: string;
@@ -60,8 +64,17 @@ const expectedVersion: ParamSpec = {
 
 const memoryInputParams: Record<string, ParamSpec> = {
   content: { type: "string", required: true, description: "The fact to remember." },
-  type: { type: "string", description: "Caller-defined category; empty means unset." },
-  scope: { type: "string", description: "Caller-defined scope; empty means unset." },
+  kind: {
+    type: "string",
+    required: true,
+    description: "The memory's track: fact (a durable conclusion) or note (a transient note).",
+  },
+  label: { type: "string", description: "An open caller-defined tag; empty means unset." },
+  branches: {
+    type: "array",
+    items: { type: "string" },
+    description: "Git branches this memory is limited to; omit (or empty) for all branches.",
+  },
   source: { type: "array", items: { type: "string" }, description: "Source identifiers." },
   metadata: {
     type: "object",
@@ -74,14 +87,14 @@ const memoryInput: ParamSpec = {
   type: "object",
   properties: memoryInputParams,
   additionalProperties: false,
-  description: "Memory content and metadata.",
+  description: "Memory content, track, and metadata.",
 };
 
 const searchFilter: ParamSpec = {
   type: "object",
   properties: {
-    types: { type: "array", items: { type: "string" }, description: "Exact type matches (OR)." },
-    scopes: { type: "array", items: { type: "string" }, description: "Exact scope matches (OR)." },
+    kinds: { type: "array", items: { type: "string" }, description: "Exact kind matches (OR)." },
+    labels: { type: "array", items: { type: "string" }, description: "Exact label matches (OR)." },
     created_after: { type: "string", description: "RFC 3339 lower bound, inclusive." },
     created_before: { type: "string", description: "RFC 3339 upper bound, inclusive." },
     updated_after: { type: "string", description: "RFC 3339 lower bound, inclusive." },
@@ -106,49 +119,87 @@ export const parameterSpecs: Record<string, Record<string, ParamSpec>> = {
   "workspace-delete": { workspace_id: workspaceId },
   "memory-search": {
     workspace_id: workspaceId,
-    query: { type: "string", description: "Free-text keywords (ASCII case-insensitive substring)." },
+    query: { type: "string", description: "Free-text terms matched by the local FTS5 index." },
     filter: searchFilter,
     limit: { type: "number", description: "1..20, default 8." },
+    branch: {
+      type: "string",
+      description:
+        "Restrict results to memories visible on this git branch. Omit to auto-detect the agent's current branch; a memory with no branch restriction is always visible.",
+    },
   },
   "memory-list": {
     workspace_id: workspaceId,
     limit: { type: "number", description: "1..200, default 50." },
     cursor: { type: "string", description: "Opaque pagination cursor; pass back verbatim." },
   },
-  "memory-get": { workspace_id: workspaceId, memory_id: memoryId },
+  "memory-get": {
+    workspace_id: workspaceId,
+    memory_id: memoryId,
+    version: { type: "number", description: "Read that exact historical version instead of the current one." },
+  },
+  "memory-history": { workspace_id: workspaceId, memory_id: memoryId },
+  "memory-diff": {
+    workspace_id: workspaceId,
+    memory_id: memoryId,
+    from_version: { type: "number", required: true, description: "First version to compare." },
+    to_version: { type: "number", required: true, description: "Second version to compare; must differ." },
+  },
   "memory-create": {
     workspace_id: workspaceId,
     content: { type: "string", required: true, description: "The fact to remember." },
-    type: { type: "string", description: "Caller-defined category." },
-    scope: { type: "string", description: "Caller-defined scope." },
+    kind: {
+      type: "string",
+      required: true,
+      description: "The memory's track: fact (a durable conclusion) or note (a transient note).",
+    },
+    label: { type: "string", description: "An open caller-defined tag." },
+    branches: {
+      type: "array",
+      items: { type: "string" },
+      description: "Git branches this memory is limited to; omit (or empty) for all branches.",
+    },
     source: { type: "array", items: { type: "string" }, description: "Source identifiers." },
     metadata: {
       type: "object",
       additionalProperties: true,
       description: "Caller-defined extension information.",
     },
+    reason: { type: "string", description: "Why this is being recorded (audit only)." },
   },
   "memory-update": {
     workspace_id: workspaceId,
     memory_id: memoryId,
     expected_version: expectedVersion,
     content: { type: "string", description: "Whole replacement of the content." },
-    type: { type: "string", description: 'Whole replacement; "" clears.' },
-    scope: { type: "string", description: 'Whole replacement; "" clears.' },
+    kind: { type: "string", description: "Whole replacement; one of fact or note." },
+    label: { type: "string", description: 'Whole replacement; "" clears.' },
+    branches: {
+      type: "array",
+      items: { type: "string" },
+      description: "Whole replacement; [] clears the restriction (all branches).",
+    },
     source: { type: "array", items: { type: "string" }, description: "Whole replacement; [] clears." },
     metadata: {
       type: "object",
       additionalProperties: true,
       description: "Whole replacement; {} clears.",
     },
+    reason: { type: "string", description: "Why this revision is made (audit only)." },
   },
   "memory-supersede": {
     workspace_id: workspaceId,
     memory_id: memoryId,
     expected_version: expectedVersion,
     new: { ...memoryInput, required: true },
+    reason: { type: "string", description: "Why the old fact is replaced (audit only)." },
   },
-  "memory-invalidate": { workspace_id: workspaceId, memory_id: memoryId, expected_version: expectedVersion },
+  "memory-invalidate": {
+    workspace_id: workspaceId,
+    memory_id: memoryId,
+    expected_version: expectedVersion,
+    reason: { type: "string", description: "Why the fact is no longer true (audit only)." },
+  },
   "memory-delete": { workspace_id: workspaceId, memory_id: memoryId, expected_version: expectedVersion },
 };
 
@@ -193,7 +244,7 @@ const TOOL_NAMES: Record<string, { name: string; description: string }> = {
   "memory-search": {
     name: "memory_search",
     description:
-      "Retrieve candidate active memories by keyword query and/or exact type/scope/time filters, ordered by score then recency. Candidate retrieval, not a relevance verdict.",
+      "Retrieve candidate active memories with local FTS5 lexical search and/or exact kind, label, and time filters. A higher score is a better BM25 match; this is candidate retrieval, not a relevance verdict. Each hit carries a citation (memory_id + version); pass citation.memory_id and citation.version as a later mutation's memory_id and expected_version so a change between search and write surfaces as version_conflict.",
   },
   "memory-list": {
     name: "memory_list",
@@ -203,7 +254,17 @@ const TOOL_NAMES: Record<string, { name: string; description: string }> = {
   "memory-get": {
     name: "memory_get",
     description:
-      "Read one memory precisely by ID, including content, version, source, state, and replacement relationship. The fine-grained read before a version-sensitive write.",
+      "Read one memory precisely by ID, including content, version, source, state, and replacement relationship. An optional version reads that exact historical version (the preview step before a rollback).",
+  },
+  "memory-history": {
+    name: "memory_history",
+    description:
+      "List the version history of one memory: each version's number, producing action, state, and times, without content. Use memory_get with a version to read a full historical version.",
+  },
+  "memory-diff": {
+    name: "memory_diff",
+    description:
+      "Compare two existing versions of one memory and return only the fields that changed, each with from and to values.",
   },
   "memory-create": {
     name: "memory_create",
@@ -231,25 +292,40 @@ const TOOL_NAMES: Record<string, { name: string; description: string }> = {
   },
 };
 
+const USER_REPLY_GUIDANCE =
+  "Treat memory IDs, versions, citations, and protocol metadata as internal tool state. Do not repeat them in user-facing replies unless the user explicitly asks; normally summarize memory content only.";
+
 type Renderer = (args: unknown, value: Record<string, JsonValue>) => Array<{ type: "text"; text: string }>;
 
 // Natural-language labels for displayable protocol values (design principles).
 const STATE_LABELS: Record<string, string> = {
-  active: "生效中",
-  superseded: "已被取代",
-  invalid: "已失效",
+  active: "active",
+  superseded: "superseded",
+  invalid: "invalid",
+};
+
+const ACTION_LABELS: Record<string, string> = {
+  create: "create",
+  update: "update",
+  supersede: "supersede",
+  invalidate: "invalidate",
+};
+
+const KIND_LABELS: Record<string, string> = {
+  fact: "fact",
+  note: "note",
 };
 
 const ERROR_LABELS: Record<string, string> = {
-  workspace_busy: "该工作区正被其他进程占用，请稍后重试",
-  workspace_not_found: "工作区未注册",
-  workspace_path_used: "该路径已绑定到另一个工作区",
-  workspace_broken: "工作区记忆数据库缺失或损坏",
-  memory_not_found: "没有找到该记忆",
-  version_conflict: "该记忆已被其他操作更新，请先重新读取后再试",
-  invalid_memory_state: "该记忆当前状态不允许此操作",
-  home_broken: "记忆存储目录损坏，无法访问",
-  schema_mismatch: "记忆存储格式不受支持",
+  workspace_busy: "the workspace is locked by another process; retry shortly",
+  workspace_not_found: "the workspace is not registered",
+  workspace_path_used: "the path is already bound to another workspace",
+  workspace_broken: "the workspace memory database is missing or corrupt",
+  memory_not_found: "no such memory",
+  version_conflict: "the memory changed since it was read; re-read before retrying",
+  invalid_memory_state: "the memory state does not allow this operation",
+  home_broken: "the memory store directory is corrupt",
+  schema_mismatch: "the memory store format is unsupported",
 };
 
 // formatDate keeps the printed wall time but drops the machine suffix (T and
@@ -265,31 +341,32 @@ function formatDate(value: unknown): string {
 // value in natural language: state, dates, and replacement relationships
 // expressed as the related memory's content, never as an id.
 function renderMemory(memory: Record<string, JsonValue>): string {
-  let text = `记忆 ${String(memory.memory_id ?? "")}（${STATE_LABELS[String(memory.state ?? "")] ?? String(memory.state ?? "")}，版本 ${memory.version ?? ""}）`;
-  if (typeof memory.content === "string") text += `\n内容：${memory.content}`;
-  if (typeof memory.type === "string" && memory.type !== "") text += `\n分类：${memory.type}`;
-  if (typeof memory.scope === "string" && memory.scope !== "") text += `\n范围：${memory.scope}`;
-  if (Array.isArray(memory.source) && memory.source.length > 0) text += `\n来源：${memory.source.join(", ")}`;
+  let text = `memory ${String(memory.memory_id ?? "")} (${STATE_LABELS[String(memory.state ?? "")] ?? String(memory.state ?? "")}, version ${memory.version ?? ""})`;
+  if (typeof memory.content === "string") text += `\ncontent: ${truncateUtf8(memory.content, RENDER_BUDGET.maxItemBytes)}`;
+  if (typeof memory.kind === "string" && memory.kind !== "") text += `\nkind: ${KIND_LABELS[memory.kind] ?? memory.kind}`;
+  if (typeof memory.label === "string" && memory.label !== "") text += `\nlabel: ${memory.label}`;
+  if (Array.isArray(memory.branches) && memory.branches.length > 0) text += `\nbranches: ${memory.branches.join(", ")}`;
+  if (Array.isArray(memory.source) && memory.source.length > 0) text += `\nsource: ${memory.source.join(", ")}`;
   if (typeof memory.supersedes_content === "string" && memory.supersedes_content !== "") {
-    text += `\n取代了更早的记忆：「${memory.supersedes_content}」`;
+    text += `\nsupersedes an earlier memory: "${truncateUtf8(memory.supersedes_content, 200)}"`;
   } else if (typeof memory.supersedes === "string") {
-    text += `\n取代了更早的一条记忆`;
+    text += `\nsupersedes an earlier memory`;
   }
   if (typeof memory.superseded_by_content === "string" && memory.superseded_by_content !== "") {
-    text += `\n已被新记忆取代：「${memory.superseded_by_content}」`;
+    text += `\nsuperseded by a newer memory: "${truncateUtf8(memory.superseded_by_content, 200)}"`;
   } else if (typeof memory.superseded_by === "string") {
-    text += `\n已被一条新记忆取代`;
+    text += `\nsuperseded by a newer memory`;
   }
   const created = formatDate(memory.created_at);
   const updated = formatDate(memory.updated_at);
-  if (created !== "") text += `\n创建于 ${created}`;
-  if (updated !== "" && updated !== created) text += `\n修改于 ${updated}`;
+  if (created !== "") text += `\ncreated ${created}`;
+  if (updated !== "" && updated !== created) text += `\nupdated ${updated}`;
   return text;
 }
 
 function renderWorkspace(workspace: Record<string, JsonValue> | null | undefined): string {
-  if (workspace === null || workspace === undefined) return "未注册";
-  return `工作区路径：${workspace.path}`;
+  if (workspace === null || workspace === undefined) return "unregistered";
+  return `workspace path: ${workspace.path}`;
 }
 
 const renderers: Record<string, Renderer> = {
@@ -299,56 +376,88 @@ const renderers: Record<string, Renderer> = {
   "workspace-register": (_args, value) => [
     {
       type: "text",
-      text: `${renderWorkspace(value.workspace as Record<string, JsonValue> | null | undefined)}（${value.created ? "新建" : "已存在"}）`,
+      text: `${renderWorkspace(value.workspace as Record<string, JsonValue> | null | undefined)} (${value.created ? "new" : "existing"})`,
     },
   ],
   "workspace-rebind": (_args, value) => [
     { type: "text", text: renderWorkspace(value.workspace as Record<string, JsonValue> | null | undefined) },
   ],
-  "workspace-clear": (_args, value) => [{ type: "text", text: `已删除 ${value.deleted_count ?? 0} 条记忆` }],
-  "workspace-delete": () => [{ type: "text", text: "工作区已删除（映射与记忆数据库）" }],
+  "workspace-clear": (_args, value) => [{ type: "text", text: `removed ${value.deleted_count ?? 0} memories` }],
+  "workspace-delete": () => [{ type: "text", text: "workspace deleted (mapping and memory database)" }],
   "memory-search": (_args, value) => {
     const hits = (value.memories as Array<Record<string, JsonValue>>) ?? [];
-    const lines = hits.map((hit) =>
-      [
-        `- ${hit.memory_id} 得分 ${hit.score ?? ""} 版本 ${hit.version ?? ""}`,
-        hit.type ? ` 分类 ${hit.type}` : "",
-        hit.scope ? ` 范围 ${hit.scope}` : "",
-        `\n  ${hit.snippet ?? ""}`,
-      ].join(""),
-    );
-    return [{ type: "text", text: lines.length > 0 ? lines.join("\n") : "没有匹配的记忆" }];
+    const lines = hits.slice(0, RENDER_BUDGET.maxItems).map((hit) => {
+      const citation = hit.citation as Record<string, JsonValue> | undefined;
+      const cite =
+        typeof citation?.memory_id === "string" && typeof citation?.version === "number"
+          ? ` cite ${citation.memory_id}@${citation.version}`
+          : "";
+      const snippet =
+        typeof hit.snippet === "string" ? truncateUtf8(hit.snippet, RENDER_BUDGET.maxItemBytes) : "";
+      return [
+        `- ${hit.memory_id} score ${hit.score ?? ""} matched terms ${hit.matched_terms ?? 0} version ${hit.version ?? ""}${cite}`,
+        typeof hit.kind === "string" ? ` kind ${KIND_LABELS[hit.kind] ?? hit.kind}` : "",
+        hit.label ? ` label ${hit.label}` : "",
+        `\n  ${snippet}`,
+      ].join("");
+    });
+    if (lines.length === 0) return [{ type: "text", text: "no matching memories" }];
+    return [{ type: "text", text: `${TRUST_NOTICE}\n${boundTotal(lines, RENDER_BUDGET.maxTotalBytes)}` }];
   },
   "memory-list": (_args, value) => {
     const items = (value.memories as Array<Record<string, JsonValue>>) ?? [];
     const lines = items.map((item) =>
       [
-        `- ${item.memory_id} ${STATE_LABELS[String(item.state ?? "")] ?? String(item.state ?? "")} 版本 ${item.version ?? ""}`,
-        item.type ? ` 分类 ${item.type}` : "",
-        item.scope ? ` 范围 ${item.scope}` : "",
+        `- ${item.memory_id} ${STATE_LABELS[String(item.state ?? "")] ?? String(item.state ?? "")} version ${item.version ?? ""}`,
+        typeof item.kind === "string" ? ` kind ${KIND_LABELS[item.kind] ?? item.kind}` : "",
+        item.label ? ` label ${item.label}` : "",
       ].join(""),
     );
-    return [{ type: "text", text: lines.length > 0 ? lines.join("\n") : "该工作区没有记忆" }];
+    return [{ type: "text", text: lines.length > 0 ? lines.join("\n") : "no memories in this workspace" }];
   },
   "memory-get": (_args, value) => [
     { type: "text", text: renderMemory(value.memory as Record<string, JsonValue>) },
   ],
+  "memory-history": (_args, value) => {
+    const versions = (value.versions as Array<Record<string, JsonValue>>) ?? [];
+    const lines = versions.map((item) => {
+      const version = item.version ?? "";
+      const action = ACTION_LABELS[String(item.action ?? "")] ?? String(item.action ?? "");
+      const state = STATE_LABELS[String(item.state ?? "")] ?? String(item.state ?? "");
+      const updated = formatDate(item.updated_at);
+      const archived = item.archived_at === null ? null : formatDate(item.archived_at);
+      const tail = archived ? `, superseded at ${archived}` : " (current)";
+      return `- version ${version} ${action}, ${state}, ${updated}${tail}`;
+    });
+    return [{ type: "text", text: lines.length > 0 ? lines.join("\n") : "no version history" }];
+  },
+  "memory-diff": (_args, value) => {
+    const changes = (value.changes as Array<Record<string, JsonValue>>) ?? [];
+    const lines = changes.map((change) => {
+      const field = String(change.field ?? "");
+      const from = JSON.stringify(change.from ?? null);
+      const to = JSON.stringify(change.to ?? null);
+      return `- ${field}: ${from} -> ${to}`;
+    });
+    const header = `version ${value.from_version ?? ""} vs ${value.to_version ?? ""} differences`;
+    return [{ type: "text", text: lines.length > 0 ? `${header}\n${lines.join("\n")}` : `${header}\nno differences` }];
+  },
   "memory-create": (_args, value) => [
-    { type: "text", text: `已记录：\n${renderMemory(value.memory as Record<string, JsonValue>)}` },
+    { type: "text", text: `recorded:\n${renderMemory(value.memory as Record<string, JsonValue>)}` },
   ],
   "memory-update": (_args, value) => [
-    { type: "text", text: `已更新：\n${renderMemory(value.memory as Record<string, JsonValue>)}` },
+    { type: "text", text: `updated:\n${renderMemory(value.memory as Record<string, JsonValue>)}` },
   ],
   "memory-supersede": (_args, value) => [
     {
       type: "text",
-      text: `旧记忆：\n${renderMemory(value.old as Record<string, JsonValue>)}\n新记忆：\n${renderMemory(value.new as Record<string, JsonValue>)}`,
+      text: `old:\n${renderMemory(value.old as Record<string, JsonValue>)}\nnew:\n${renderMemory(value.new as Record<string, JsonValue>)}`,
     },
   ],
   "memory-invalidate": (_args, value) => [
-    { type: "text", text: `已标记无效：\n${renderMemory(value.memory as Record<string, JsonValue>)}` },
+    { type: "text", text: `invalidated:\n${renderMemory(value.memory as Record<string, JsonValue>)}` },
   ],
-  "memory-delete": () => [{ type: "text", text: "记忆已删除（含全部历史版本）" }],
+  "memory-delete": () => [{ type: "text", text: "memory deleted (including all historical versions)" }],
 };
 
 // ---- Presentation (human-facing UI cards, replay-safe and pure) ----
@@ -357,54 +466,60 @@ const renderers: Record<string, Renderer> = {
 // timestamps, or other protocol fields.
 
 function cleanMemoryText(memory: Record<string, JsonValue>): string {
-  const content = typeof memory.content === "string" ? memory.content : "";
-  const tags: string[] = [];
-  if (typeof memory.type === "string" && memory.type !== "") tags.push(memory.type);
-  if (typeof memory.scope === "string" && memory.scope !== "") tags.push(memory.scope);
-  return tags.length > 0 ? `${content}\n[${tags.join(" · ")}]` : content;
+  return typeof memory.content === "string" ? memory.content : "";
 }
 
 const resultTitles: Record<string, string> = {
-  "workspace-resolve": "工作区",
-  "workspace-register": "工作区注册",
-  "workspace-rebind": "工作区重绑定",
-  "workspace-clear": "工作区清空",
-  "workspace-delete": "工作区删除",
-  "memory-search": "记忆检索",
-  "memory-list": "记忆列表",
-  "memory-get": "记忆详情",
-  "memory-create": "已记录记忆",
-  "memory-update": "已更新记忆",
-  "memory-supersede": "已取代记忆",
-  "memory-invalidate": "已标记无效",
-  "memory-delete": "已删除记忆",
+  "workspace-resolve": "Workspace",
+  "workspace-register": "Workspace Registered",
+  "workspace-rebind": "Workspace Rebound",
+  "workspace-clear": "Workspace Cleared",
+  "workspace-delete": "Workspace Deleted",
+  "memory-search": "Memory Search",
+  "memory-list": "Memory List",
+  "memory-get": "Memory Detail",
+  "memory-history": "Version History",
+  "memory-diff": "Version Diff",
+  "memory-create": "Memory Recorded",
+  "memory-update": "Memory Updated",
+  "memory-supersede": "Memory Superseded",
+  "memory-invalidate": "Memory Invalidated",
+  "memory-delete": "Memory Deleted",
 };
 
 function presentationMeta(subcommand: string, value: Record<string, JsonValue>): { text: string } {
   const workspace = (value.workspace as Record<string, JsonValue> | null | undefined) ?? null;
   switch (subcommand) {
     case "workspace-resolve":
-      return { text: workspace ? `路径 ${String(workspace.path ?? "")}` : "该路径未注册工作区" };
+      return { text: workspace ? `path ${String(workspace.path ?? "")}` : "this path is not a registered workspace" };
     case "workspace-register":
     case "workspace-rebind":
-      return { text: `路径 ${String(workspace?.path ?? "")}` };
+      return { text: `path ${String(workspace?.path ?? "")}` };
     case "workspace-clear":
-      return { text: `已删除 ${value.deleted_count ?? 0} 条记忆` };
+      return { text: `removed ${value.deleted_count ?? 0} memories` };
     case "workspace-delete":
-      return { text: "已删除映射与记忆数据库" };
+      return { text: "removed mapping and memory database" };
     case "memory-search": {
       const hits = (value.memories as Array<Record<string, JsonValue>>) ?? [];
       const lines = hits.map((hit) => String(hit.snippet ?? ""));
-      return { text: lines.length > 0 ? lines.join("\n") : "没有匹配的记忆" };
+      return { text: lines.length > 0 ? lines.join("\n") : "no matching memories" };
     }
     case "memory-list": {
       const items = (value.memories as Array<Record<string, JsonValue>>) ?? [];
-      return { text: `共 ${items.length} 条记忆` };
+      return { text: `${items.length} memories` };
+    }
+    case "memory-history": {
+      const versions = (value.versions as Array<Record<string, JsonValue>>) ?? [];
+      return { text: `${versions.length} versions` };
+    }
+    case "memory-diff": {
+      const changes = (value.changes as Array<Record<string, JsonValue>>) ?? [];
+      return { text: `${changes.length} changes` };
     }
     case "memory-supersede":
       return { text: cleanMemoryText(value.new as Record<string, JsonValue>) };
     case "memory-delete":
-      return { text: "已删除（含全部历史版本）" };
+      return { text: "deleted (including all historical versions)" };
     default:
       return { text: cleanMemoryText(value.memory as Record<string, JsonValue>) };
   }
@@ -412,20 +527,44 @@ function presentationMeta(subcommand: string, value: Record<string, JsonValue>):
 
 function cardKind(subcommand: string): "read" | "search" | undefined {
   if (subcommand === "memory-search") return "search";
-  if (subcommand === "workspace-resolve" || subcommand === "memory-get" || subcommand === "memory-list") return "read";
+  if (
+    subcommand === "workspace-resolve" ||
+    subcommand === "memory-get" ||
+    subcommand === "memory-list" ||
+    subcommand === "memory-history" ||
+    subcommand === "memory-diff"
+  )
+    return "read";
   return undefined;
 }
 
-export function registerMemoryNoteTools(ctx: Context, config: MemoryNoteConfig): void {  for (const subcommand of Object.keys(parameterSpecs)) {
+export function registerMemoryNoteTools(ctx: Context, config: MemoryNoteConfig): void {
+  let coreCheck: Promise<string> | undefined;
+  const ensureCore = async (): Promise<void> => {
+    coreCheck ??= checkCoreVersion(coreOptions(config), protocolMajor);
+    try {
+      await coreCheck;
+    } catch (err) {
+      // Allow recovery after the core is reinstalled without restarting a
+      // long-running profile. Successful checks stay cached.
+      coreCheck = undefined;
+      throw err;
+    }
+  };
+
+  for (const subcommand of Object.keys(parameterSpecs)) {
     const spec = TOOL_NAMES[subcommand];
     const parameters = parameterSpecs[subcommand];
+    const description = subcommand.startsWith("memory-")
+      ? `${spec.description} ${USER_REPLY_GUIDANCE}`
+      : spec.description;
     const needsWorkspaceId = "workspace_id" in parameters;
     const defaultsPath = subcommand === "workspace-resolve";
 
     ctx.tools.register(
       defineTool({
         name: spec.name,
-        description: spec.description,
+        description,
         parameters: parameters as ParametersOf,
         output: {
           // The canonical value stays complete for programmatic consumers
@@ -442,6 +581,11 @@ export function registerMemoryNoteTools(ctx: Context, config: MemoryNoteConfig):
             : undefined;
         },
         async execute(args, exec) {
+          try {
+            await ensureCore();
+          } catch (err) {
+            throw friendlyError(err);
+          }
           const request: Record<string, unknown> = { ...(args as Record<string, unknown>) };
           if (defaultsPath && request.path === undefined) {
             const cwd = agentCwd(exec);
@@ -452,6 +596,10 @@ export function registerMemoryNoteTools(ctx: Context, config: MemoryNoteConfig):
           }
           if (needsWorkspaceId && request.workspace_id === undefined) {
             request.workspace_id = await resolveWorkspaceId(exec, config);
+          }
+          if (subcommand === "memory-search" && request.branch === undefined) {
+            const branch = resolveBranch(exec, config);
+            if (branch !== undefined) request.branch = branch;
           }
           if (WRITE_TOOLS.has(spec.name)) {
             await requireApproval(ctx, exec, spec.name, request, config);
@@ -479,6 +627,23 @@ function agentCwd(exec: ToolExecution): string | undefined {
   const agent = exec.agent as unknown as { session?: { header?: { cwd?: unknown } } } | undefined;
   const cwd = agent?.session?.header?.cwd;
   return typeof cwd === "string" ? cwd : undefined;
+}
+
+/** The agent's current git branch: an explicit env override wins, otherwise
+ * the cwd's `.git/HEAD` is read. Non-git and detached-HEAD yield undefined,
+ * meaning "no branch filter". */
+function resolveBranch(exec: ToolExecution, config: MemoryNoteConfig): string | undefined {
+  const envBranch = config.env?.["DSH_MEMORY_NOTE_GIT_BRANCH"] ?? process.env.DSH_MEMORY_NOTE_GIT_BRANCH;
+  if (envBranch) return envBranch;
+  const cwd = agentCwd(exec);
+  if (cwd === undefined) return undefined;
+  try {
+    const head = readFileSync(path.join(cwd, ".git", "HEAD"), "utf8").trim();
+    const match = /^ref: refs\/heads\/(.+)$/.exec(head);
+    return match ? match[1] : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 async function resolveWorkspaceId(exec: ToolExecution, config: MemoryNoteConfig): Promise<number> {
@@ -602,37 +767,47 @@ async function describeApproval(
 
   switch (toolName) {
     case "workspace_register":
-      return `注册工作区：${text(request.path)}`;
+      return `register workspace: ${text(request.path)}`;
     case "workspace_rebind":
-      return `将工作区重绑定到：${text(request.path)}`;
+      return `rebind workspace to: ${text(request.path)}`;
     case "workspace_clear":
-      return `清空该工作区的全部记忆与历史版本`;
+      return `clear all memories and history of this workspace`;
     case "workspace_delete":
-      return `删除该工作区的映射与记忆数据库（不影响用户目录）`;
-    case "memory_create":
-      return `记录新记忆：「${short(text(request.content))}」`;
+      return `delete this workspace's mapping and memory database (the user's directory is untouched)`;
+    case "memory_create": {
+      const branches = Array.isArray(request.branches) ? request.branches : [];
+      const tail = branches.length > 0 ? ` (branches: ${branches.join(", ")})` : "";
+      return `record new memory: "${short(text(request.content))}"${tail}`;
+    }
     case "memory_update": {
       const previous = await currentContent(request, exec, config);
       const parts: string[] = [];
-      if (typeof request.content === "string") parts.push(`内容改为「${short(request.content)}」`);
-      if (request.type !== undefined) parts.push(`分类${text(request.type) === "" ? "清除" : `改为「${text(request.type)}」`}`);
-      if (request.scope !== undefined) parts.push(`范围${text(request.scope) === "" ? "清除" : `改为「${text(request.scope)}」`}`);
-      if (request.source !== undefined) parts.push("来源已更新");
-      if (request.metadata !== undefined) parts.push("元数据已更新");
-      return `更新记忆「${short(previous)}」：${parts.join("，")}`;
+      if (typeof request.content === "string") parts.push(`content → "${short(request.content)}"`);
+      if (request.kind !== undefined) parts.push(`kind → "${text(request.kind)}"`);
+      if (request.label !== undefined) parts.push(`label ${text(request.label) === "" ? "cleared" : `→ "${text(request.label)}"`}`);
+      if (request.branches !== undefined) {
+        const branches = Array.isArray(request.branches) ? request.branches.join(", ") : "";
+        parts.push(branches === "" ? "branch restriction cleared" : `branches → "${branches}"`);
+      }
+      if (request.source !== undefined) parts.push("source updated");
+      if (request.metadata !== undefined) parts.push("metadata updated");
+      return `update memory "${short(previous)}": ${parts.join(", ")}`;
     }
     case "memory_supersede": {
       const previous = await currentContent(request, exec, config);
-      const replacement = (request.new as Record<string, unknown> | undefined)?.content;
-      return `用新记忆取代「${short(previous)}」：「${short(text(replacement))}」`;
+      const next = (request.new as Record<string, unknown> | undefined) ?? {};
+      const replacement = next.content;
+      const branches = Array.isArray(next.branches) ? next.branches : [];
+      const tail = branches.length > 0 ? ` (branches: ${branches.join(", ")})` : "";
+      return `replace memory "${short(previous)}" with: "${short(text(replacement))}"${tail}`;
     }
     case "memory_invalidate": {
       const previous = await currentContent(request, exec, config);
-      return `将记忆「${short(previous)}」标记为无效`;
+      return `mark memory "${short(previous)}" as invalid`;
     }
     case "memory_delete": {
       const previous = await currentContent(request, exec, config);
-      return `删除记忆：「${short(previous)}」`;
+      return `delete memory: "${short(previous)}"`;
     }
     default:
       return toolName;

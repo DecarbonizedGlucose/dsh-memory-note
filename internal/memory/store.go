@@ -134,19 +134,60 @@ func (tx *Tx) Get(ctx context.Context, memoryID string) (protocol.Memory, error)
 	return scanMemory(tx.QueryRowContext(ctx, statements.SelectMemoryByID, tx.wid, memoryID))
 }
 
-func (tx *Tx) Active(ctx context.Context) ([]protocol.Memory, error) {
-	rows, err := tx.QueryContext(ctx, statements.SelectActive, tx.wid)
+type SearchOptions struct {
+	Query         string
+	Kinds         []string
+	Labels        []string
+	CreatedAfter  *protocol.Timestamp
+	CreatedBefore *protocol.Timestamp
+	UpdatedAfter  *protocol.Timestamp
+	UpdatedBefore *protocol.Timestamp
+	Limit         int
+}
+
+type SearchCandidate struct {
+	Memory protocol.Memory
+	Rank   float64
+}
+
+// Search reads a bounded candidate set. FTS MATCH is used when Query is set;
+// exact filters are ordinary bound SQL conditions in either mode.
+func (tx *Tx) Search(ctx context.Context, options SearchOptions) ([]SearchCandidate, error) {
+	query := statements.MemorySearch(
+		options.Query != "", len(options.Kinds), len(options.Labels),
+		options.CreatedAfter != nil, options.CreatedBefore != nil,
+		options.UpdatedAfter != nil, options.UpdatedBefore != nil,
+	)
+	args := make([]any, 0, 3+len(options.Kinds)+len(options.Labels)+4)
+	if options.Query != "" {
+		args = append(args, options.Query)
+	}
+	args = append(args, tx.wid)
+	for _, kind := range options.Kinds {
+		args = append(args, kind)
+	}
+	for _, label := range options.Labels {
+		args = append(args, label)
+	}
+	for _, value := range []*protocol.Timestamp{options.CreatedAfter, options.CreatedBefore, options.UpdatedAfter, options.UpdatedBefore} {
+		if value != nil {
+			args = append(args, value.Unix())
+		}
+	}
+	args = append(args, options.Limit)
+	rows, err := tx.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, internalError("cannot search memories")
 	}
 	defer rows.Close()
-	result := make([]protocol.Memory, 0)
+	result := make([]SearchCandidate, 0)
 	for rows.Next() {
-		memory, err := scanMemory(rows)
+		var rank float64
+		memory, err := scanMemoryWithExtra(rows, &rank)
 		if err != nil {
 			return nil, err
 		}
-		result = append(result, memory)
+		result = append(result, SearchCandidate{Memory: memory, Rank: rank})
 	}
 	if err := rows.Err(); err != nil {
 		return nil, internalError("cannot read memories")
@@ -188,7 +229,7 @@ func (tx *Tx) Insert(ctx context.Context, memory protocol.Memory) error {
 	source, _ := json.Marshal(memory.Source)
 	metadata, _ := json.Marshal(memory.Metadata)
 	_, err := tx.ExecContext(ctx, statements.InsertMemory,
-		memory.ID, memory.WorkspaceID, memory.Content, nullable(memory.Type), nullable(memory.Scope),
+		memory.ID, memory.WorkspaceID, memory.Content, memory.Kind, nullable(memory.Label), branchesJSON(memory.Branches),
 		string(source), string(metadata), memory.State, memory.Version, nullable(memory.Supersedes),
 		nullable(memory.SupersededBy), memory.CreatedAt.Unix(), offsetMinutes(memory.CreatedAt),
 		memory.UpdatedAt.Unix(), offsetMinutes(memory.UpdatedAt))
@@ -199,12 +240,13 @@ func (tx *Tx) Insert(ctx context.Context, memory protocol.Memory) error {
 }
 
 // Archive stores the pre-image of a successful update, supersede, or
-// invalidate. It must run in the same transaction as the mutation.
-func (tx *Tx) Archive(ctx context.Context, memory protocol.Memory, archivedAt int64) error {
+// invalidate, tagged with the action that produced it. It must run in the
+// same transaction as the mutation.
+func (tx *Tx) Archive(ctx context.Context, memory protocol.Memory, action string, archivedAt int64) error {
 	source, _ := json.Marshal(memory.Source)
 	metadata, _ := json.Marshal(memory.Metadata)
 	_, err := tx.ExecContext(ctx, statements.InsertHistory,
-		memory.WorkspaceID, memory.ID, memory.Version, memory.Content, nullable(memory.Type), nullable(memory.Scope),
+		memory.WorkspaceID, memory.ID, memory.Version, action, memory.Content, memory.Kind, nullable(memory.Label), branchesJSON(memory.Branches),
 		string(source), string(metadata), memory.State, nullable(memory.Supersedes), nullable(memory.SupersededBy),
 		memory.CreatedAt.Unix(), offsetMinutes(memory.CreatedAt),
 		memory.UpdatedAt.Unix(), offsetMinutes(memory.UpdatedAt), archivedAt)
@@ -214,11 +256,77 @@ func (tx *Tx) Archive(ctx context.Context, memory protocol.Memory, archivedAt in
 	return nil
 }
 
+// InsertEvent writes one lightweight change-log row in the same transaction
+// as its mutation. It carries no content.
+func (tx *Tx) InsertEvent(ctx context.Context, workspaceID int64, memoryID, action string, fromVersion, toVersion *int64, relatedMemoryID, reason string, at time.Time) error {
+	_, err := tx.ExecContext(ctx, statements.InsertEvent,
+		workspaceID, memoryID, action, nullableInt(fromVersion), nullableInt(toVersion),
+		nullable(&relatedMemoryID), nullable(&reason), at.Unix(), offsetMinutes(protocol.Timestamp{Time: at}))
+	if err != nil {
+		return internalError("cannot record memory event")
+	}
+	return nil
+}
+
+// Version reads one exact historical version from the archive. It returns
+// memory_not_found when that version never existed.
+func (tx *Tx) Version(ctx context.Context, workspaceID int64, memoryID string, version int64) (protocol.Memory, error) {
+	return scanMemory(tx.QueryRowContext(ctx, statements.SelectHistoryVersion, workspaceID, memoryID, version))
+}
+
+// HistoryItem is one row of a memory's version history.
+type HistoryItem struct {
+	Version    int64
+	Action     string
+	State      string
+	UpdatedAt  protocol.Timestamp
+	ArchivedAt *protocol.Timestamp
+}
+
+// Versions lists the archived versions of one memory, ascending.
+func (tx *Tx) Versions(ctx context.Context, workspaceID int64, memoryID string) ([]HistoryItem, error) {
+	rows, err := tx.QueryContext(ctx, statements.SelectHistoryList, workspaceID, memoryID)
+	if err != nil {
+		return nil, internalError("cannot list memory versions")
+	}
+	defer rows.Close()
+	result := make([]HistoryItem, 0)
+	for rows.Next() {
+		var item HistoryItem
+		var updated, updatedOffset, archived int64
+		if err := rows.Scan(&item.Version, &item.Action, &item.State, &updated, &updatedOffset, &archived); err != nil {
+			return nil, internalError("cannot read memory version")
+		}
+		item.UpdatedAt = timestampAt(updated, updatedOffset)
+		archivedAt := timestampAt(archived, 0)
+		item.ArchivedAt = &archivedAt
+		result = append(result, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, internalError("cannot read memory versions")
+	}
+	return result, nil
+}
+
+// LatestAction returns the action of the newest event for a memory, used as
+// the current version's action in memory-history.
+func (tx *Tx) LatestAction(ctx context.Context, workspaceID int64, memoryID string) (string, error) {
+	var action string
+	err := tx.QueryRowContext(ctx, statements.SelectLatestEventAction, workspaceID, memoryID).Scan(&action)
+	if errors.Is(err, stdsql.ErrNoRows) {
+		return "create", nil
+	}
+	if err != nil {
+		return "", internalError("cannot read memory event")
+	}
+	return action, nil
+}
+
 func (tx *Tx) Update(ctx context.Context, memory protocol.Memory, oldVersion int64) error {
 	source, _ := json.Marshal(memory.Source)
 	metadata, _ := json.Marshal(memory.Metadata)
 	result, err := tx.ExecContext(ctx, statements.UpdateMemory,
-		memory.Content, nullable(memory.Type), nullable(memory.Scope), string(source), string(metadata),
+		memory.Content, memory.Kind, nullable(memory.Label), branchesJSON(memory.Branches), string(source), string(metadata),
 		memory.State, memory.Version, nullable(memory.Supersedes), nullable(memory.SupersededBy),
 		memory.UpdatedAt.Unix(), offsetMinutes(memory.UpdatedAt), memory.WorkspaceID, memory.ID, oldVersion)
 	if err != nil {
@@ -230,11 +338,15 @@ func (tx *Tx) Update(ctx context.Context, memory protocol.Memory, oldVersion int
 	return nil
 }
 
-// Delete removes the memory's full history, clears the other end of any
-// supersede relationship (bumping its version), and deletes the current row.
+// Delete removes the memory's full history, its event rows, clears the other
+// end of any supersede relationship (bumping its version), and deletes the
+// current row. A delete is a total erasure: no audit row remains.
 func (tx *Tx) Delete(ctx context.Context, memoryID string, version int64, now protocol.Timestamp) error {
 	if _, err := tx.ExecContext(ctx, statements.DeleteMemoryHistory, tx.wid, memoryID); err != nil {
 		return internalError("cannot delete memory history")
+	}
+	if _, err := tx.ExecContext(ctx, statements.DeleteMemoryEvents, tx.wid, memoryID); err != nil {
+		return internalError("cannot delete memory events")
 	}
 	if _, err := tx.ExecContext(ctx, statements.ClearRelationships,
 		memoryID, memoryID, now.Unix(), offsetMinutes(now), tx.wid, memoryID, memoryID); err != nil {
@@ -262,25 +374,39 @@ func (tx *Tx) Clear(ctx context.Context) (int64, error) {
 	if _, err := tx.ExecContext(ctx, statements.ClearMemoryHistory, tx.wid); err != nil {
 		return 0, internalError("cannot clear memory history")
 	}
+	if _, err := tx.ExecContext(ctx, statements.ClearMemoryEvents, tx.wid); err != nil {
+		return 0, internalError("cannot clear memory events")
+	}
 	return count, nil
 }
 
 type scanner interface{ Scan(...any) error }
 
 func scanMemory(row scanner) (protocol.Memory, error) {
+	return scanMemoryWithExtra(row)
+}
+
+func scanMemoryWithExtra(row scanner, extra ...any) (protocol.Memory, error) {
 	var memory protocol.Memory
-	var memoryType, scope, supersedes, supersededBy stdsql.NullString
+	var label, branches, supersedes, supersededBy stdsql.NullString
 	var source, metadata string
 	var created, createdOffset, updated, updatedOffset int64
-	if err := row.Scan(&memory.ID, &memory.WorkspaceID, &memory.Content, &memoryType, &scope, &source, &metadata,
-		&memory.State, &memory.Version, &supersedes, &supersededBy, &created, &createdOffset, &updated, &updatedOffset); err != nil {
+	targets := []any{&memory.ID, &memory.WorkspaceID, &memory.Content, &memory.Kind, &label, &branches, &source, &metadata,
+		&memory.State, &memory.Version, &supersedes, &supersededBy, &created, &createdOffset, &updated, &updatedOffset}
+	targets = append(targets, extra...)
+	if err := row.Scan(targets...); err != nil {
 		if errors.Is(err, stdsql.ErrNoRows) {
 			return protocol.Memory{}, protocol.NewError(protocol.CodeMemoryNotFound, "memory not found")
 		}
 		return protocol.Memory{}, internalError("cannot read memory")
 	}
-	memory.Type, memory.Scope = pointer(memoryType), pointer(scope)
+	memory.Label = pointer(label)
 	memory.Supersedes, memory.SupersededBy = pointer(supersedes), pointer(supersededBy)
+	if branches.Valid {
+		if err := json.Unmarshal([]byte(branches.String), &memory.Branches); err != nil {
+			return protocol.Memory{}, protocol.NewError(protocol.CodeWorkspaceBroken, "memory branches are invalid")
+		}
+	}
 	if err := json.Unmarshal([]byte(source), &memory.Source); err != nil || memory.Source == nil {
 		return protocol.Memory{}, protocol.NewError(protocol.CodeWorkspaceBroken, "memory source is invalid")
 	}
@@ -293,7 +419,8 @@ func scanMemory(row scanner) (protocol.Memory, error) {
 	memory.UpdatedAt = timestampAt(updated, updatedOffset)
 	if memory.Version < 1 || memory.Version > protocol.MaxSafeInteger ||
 		createdOffset < -840 || createdOffset > 840 || updatedOffset < -840 || updatedOffset > 840 ||
-		(memory.State != protocol.MemoryActive && memory.State != protocol.MemorySuperseded && memory.State != protocol.MemoryInvalid) {
+		(memory.State != protocol.MemoryActive && memory.State != protocol.MemorySuperseded && memory.State != protocol.MemoryInvalid) ||
+		!protocol.ValidMemoryKind(memory.Kind) {
 		return protocol.Memory{}, protocol.NewError(protocol.CodeWorkspaceBroken, "memory row is invalid")
 	}
 	return memory, nil
@@ -304,6 +431,23 @@ func nullable(value *string) any {
 		return nil
 	}
 	return *value
+}
+
+func nullableInt(value *int64) any {
+	if value == nil {
+		return nil
+	}
+	return *value
+}
+
+// branchesJSON serializes a branch list for the branches_json column: nil or
+// empty means "visible on all branches" and is stored as SQL NULL.
+func branchesJSON(branches []string) any {
+	if len(branches) == 0 {
+		return nil
+	}
+	raw, _ := json.Marshal(branches)
+	return string(raw)
 }
 
 func pointer(value stdsql.NullString) *string {

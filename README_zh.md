@@ -35,6 +35,19 @@ cd dsh-memory-note
 安装后请确认 `GOBIN`（`$(go env GOPATH)/bin`）在 PATH 里，并重启 profile
 （`dsh --profile <name>`）以加载工具。
 
+拉取后续修改后，可以重新构建核心与 link adapter，而不必再次注册插件：
+
+```sh
+scripts/update.sh                 # Unix 类
+```
+
+```powershell
+.\scripts\update.ps1             # Windows
+```
+
+更新脚本不会修改记忆数据。如果某个版本修改了内部 SQL schema，核心会拒绝打开
+旧数据，不会自行迁移。
+
 卸载：
 
 ```sh
@@ -58,12 +71,13 @@ dsh-memory-note <subcommand> '<json-request>'
 
 - 工作区：`workspace-resolve`、`workspace-register`、`workspace-rebind`、
   `workspace-clear`、`workspace-delete`
-- 记忆：`memory-search`、`memory-list`、`memory-get`、`memory-create`、
-  `memory-update`、`memory-supersede`、`memory-invalidate`、`memory-delete`
+- 记忆：`memory-search`、`memory-list`、`memory-get`、`memory-history`、
+  `memory-diff`、`memory-create`、`memory-update`、`memory-supersede`、
+  `memory-invalidate`、`memory-delete`
 - 内部命令：`version`、`help`
 
 完整 JSON 契约见
-[`doc/zh/protocol-v1-proposal.md`](doc/zh/protocol-v1-proposal.md)。
+[`doc/zh/protocol-v2-proposal.md`](doc/zh/protocol-v2-proposal.md)。
 
 ## 存储结构
 

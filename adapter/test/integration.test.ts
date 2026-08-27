@@ -6,7 +6,7 @@
 // and its build cache writable (set GOCACHE if the default is read-only).
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -19,7 +19,7 @@ import { apply } from "../src/index.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, "..", "..");
-const enabled = process.env.RUN_INTEGRATION === "1";
+const enabled = process.env.RUN_INTEGRATION === "1" || process.env.npm_lifecycle_event === "test:integration";
 
 interface RegisteredTool {
   name: string;
@@ -27,18 +27,22 @@ interface RegisteredTool {
 }
 
 test(
-  "full lifecycle against the Go core",
+  "adapter lifecycle against the real Go core with simulated Harness services",
   { skip: !enabled },
-  async () => {
-    const binary = path.join(mkdtempSync(path.join(os.tmpdir(), "dsh-core-")), "dsh-memory-note");
+  async (t) => {
+    const tempRoot = mkdtempSync(path.join(os.tmpdir(), "dsh-memory-note-integration-"));
+    t.after(() => rmSync(tempRoot, { recursive: true, force: true }));
+
+    const binary = path.join(tempRoot, "dsh-memory-note");
     execFileSync("go", ["build", "-o", binary, "./cmd/dsh-memory-note"], {
       cwd: repoRoot,
       env: process.env,
       stdio: "pipe",
     });
 
-    const home = path.join(mkdtempSync(path.join(os.tmpdir(), "dsh-home-")), "home");
-    const workspace = mkdtempSync(path.join(os.tmpdir(), "dsh-workspace-"));
+    const home = path.join(tempRoot, "home");
+    const workspace = path.join(tempRoot, "workspace");
+    mkdirSync(workspace);
 
     const tools: RegisteredTool[] = [];
     const approvals: string[] = [];
@@ -54,7 +58,13 @@ test(
     apply(ctx, { binaryPath: binary, timeoutMs: 30_000, home });
 
     const exec = (cwd: string): ToolExecution =>
-      ({ callId: "call-1", name: "", arguments: {}, agent: { header: { cwd } }, signal: new AbortController().signal }) as unknown as ToolExecution;
+      ({
+        callId: "call-1",
+        name: "",
+        arguments: {},
+        agent: { session: { header: { cwd } } },
+        signal: new AbortController().signal,
+      }) as unknown as ToolExecution;
     const byName = (name: string): RegisteredTool => {
       const tool = tools.find((candidate) => candidate.name === name);
       assert.ok(tool, `tool ${name} registered`);
@@ -68,14 +78,19 @@ test(
     assert.equal((registered as { created: boolean }).created, true);
 
     const created = await byName("memory_create").execute(
-      { content: "Use SQLite for local storage.", type: "decision" },
+      { content: "Use SQLite for local storage.", kind: "fact", branches: ["main"] },
       exec(workspace),
     );
-    const memory = (created as { memory: { memory_id: string; version: number } }).memory;
+    const memory = (created as { memory: { memory_id: string; version: number; branches: string[] } }).memory;
     assert.equal(memory.version, 1);
+    assert.deepEqual(memory.branches, ["main"]);
 
-    const searched = await byName("memory_search").execute({ query: "sqlite" }, exec(workspace));
-    assert.equal((searched as { memories: unknown[] }).memories.length, 1);
+    // §4: a search hit carries a citation for version-safe writes.
+    const searched = await byName("memory_search").execute({ query: "sqlite", branch: "main" }, exec(workspace));
+    const hits = (searched as { memories: Array<{ memory_id: string; citation: { memory_id: string; version: number } }> }).memories;
+    assert.equal(hits.length, 1);
+    assert.equal(hits[0].citation.version, 1);
+    assert.equal(hits[0].citation.memory_id, memory.memory_id);
 
     const listed = await byName("memory_list").execute({}, exec(workspace));
     assert.equal((listed as { memories: unknown[] }).memories.length, 1);
@@ -85,6 +100,16 @@ test(
       exec(workspace),
     );
     assert.equal((updated as { memory: { version: number } }).memory.version, 2);
+
+    // §1: version history and a version-aware read.
+    const history = await byName("memory_history").execute({ memory_id: memory.memory_id }, exec(workspace));
+    const versions = (history as { versions: Array<{ version: number }> }).versions;
+    assert.equal(versions.length, 2);
+    const historical = await byName("memory_get").execute(
+      { memory_id: memory.memory_id, version: 1 },
+      exec(workspace),
+    );
+    assert.equal((historical as { memory: { content: string } }).memory.content, "Use SQLite for local storage.");
 
     const deleted = await byName("workspace_delete").execute({}, exec(workspace));
     assert.equal((deleted as { deleted: boolean }).deleted, true);

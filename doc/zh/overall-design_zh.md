@@ -1,6 +1,6 @@
 # 总体设计
 
-本文档定义 `dsh-memory-note` 的总体设计。它确定运行时结构、组件职责、存储边界、并发模型和记忆生命周期。具体的 JSON 请求、响应与错误契约由 `protocol-v1-proposal_zh.md` 单独定义。
+本文档定义 `dsh-memory-note` 的总体设计。它确定运行时结构、组件职责、存储边界、并发模型和记忆生命周期。具体的 JSON 请求、响应与错误契约由 `protocol-v2-proposal_zh.md` 单独定义。
 
 本项目保持本地化和轻量。它的核心职责是：安全的一次性执行、与路径无关的工作区身份、跨进程协调、显式的记忆状态迁移、乐观版本检查，以及严格的用户审批边界。
 
@@ -109,6 +109,8 @@ WID 是稳定的，工作区删除后不会被复用。
 
 每个工作区都有一个专属的 `workspace-{WID}-memory.db`。它只存储该工作区的记忆、状态、版本、元数据、来源、替换关系以及归档的历史版本。
 
+每个记忆数据库还包含一份 FTS5 索引，覆盖当前记录的 `content`、`kind` 与 `label`。`memories` 始终是权威表。SQLite trigger 在每次记忆写入的同一事务内维护索引；索引也可从 `memories` 重建，且不改变记忆数据。
+
 任何查询或事务都不得合并来自不同工作区数据库的记忆行。决定打开哪个数据库文件的是来自 `meta.db` 的 WID，而不是请求中提供的文件路径。
 
 SQLite 事务仍然负责记忆数据库内部的原子变更。`meta.db` 中的跨进程锁协调对数据库文件和工作区生命周期的访问；它并不能取代 SQLite 事务。
@@ -137,7 +139,7 @@ SQLite 事务仍然负责记忆数据库内部的原子变更。`meta.db` 中的
 
 在 Windows 上，工作区路径在存入数据库之前会被小写化。注册与解析工作区都会应用这一规范化，因此调用方使用的大小写变体不会产生不同的 WID。适配器从不做小写化；规范化是核心在注册与解析边界上独有的职责。
 
-安装与卸载入口同样是平台相关的：Unix 类 shell 使用 `scripts/install.sh` / `scripts/uninstall.sh`，Windows PowerShell 使用 `scripts/install.ps1` / `scripts/uninstall.ps1`。
+安装、更新与卸载入口按平台区分：Unix 类 shell 使用 `scripts/install.sh` / `scripts/update.sh` / `scripts/uninstall.sh`，Windows PowerShell 使用 `scripts/install.ps1` / `scripts/update.ps1` / `scripts/uninstall.ps1`。更新脚本用于源码 checkout 变化后重新构建核心与 link adapter；它不注册插件，也不操作记忆数据目录。
 
 ## 3. 跨进程读/写锁
 
@@ -175,16 +177,20 @@ SQLite 事务仍然负责记忆数据库内部的原子变更。`meta.db` 中的
 - `memory-create`、`memory-update`、`memory-invalidate` 和 `memory-delete` 各自在一个事务内完成；
 - `memory-supersede` 在一个事务内修改旧记录、创建新记录并建立两端的关联字段；
 - `workspace-clear` 在一个事务内删除所有记忆行；
-- `memory-search` 与 `memory-list` 在只读事务中运行，绝不修改数据；
+- `memory-search`、`memory-list`、`memory-get`、`memory-history` 与 `memory-diff` 在只读事务中运行，绝不修改数据；
 - 只有在事务提交之后才发出成功响应。
 
 所有 SQL 值都使用绑定参数。每个连接都启用外键约束。SQLite 的忙碌处理是有界的；它绝不能导致一次调用无限期等待。
 
 每条记忆都有一个单调递增的 `version`。修改已有记忆必须提供 `expected_version`；比较与修改发生在同一个事务中。不匹配时返回 `version_conflict`，且不改变任何数据。
 
-这是应用层上带类 MVCC 版本语义的乐观并发控制。它防止过时的 LLM 提案或并发的 Session 静默覆盖更新的事实。它并不承诺每个历史版本都可查询。
+这是应用层上带类 MVCC 版本语义的乐观并发控制。它防止过时的 LLM 提案或并发的 Session 静默覆盖更新的事实。
 
-每次成功的 `memory-update`、`memory-supersede` 或 `memory-invalidate` 都会把被替换的记录归档为内部历史版本。`memory-delete` 删除当前记录及其全部归档版本；`workspace-clear` 在一个事务内删除全部记录与全部历史。历史版本是内部审计数据，绝不通过 JSON 协议暴露。
+每次成功的 `memory-update`、`memory-supersede` 或 `memory-invalidate` 都会把被替换的记录归档为带 `action`（产生该归档的操作）的历史版本；每次 mutation 还在同一事务内写入一行轻量 `memory_events`（action、from/to version、关联 ID、reason、时间——不含正文）。历史版本可通过 `memory-get` 的 `version` 参数与 `memory-history` 读取；事件是内部审计数据，不通过任何读取命令暴露。
+
+回滚是一次普通 `memory-update`，其 content 复制事先读取的历史版本；version 递增（append-only），回滚永不删除任何版本。`memory-delete` 删除当前记录及其全部归档版本与事件；`workspace-clear` 在一个事务内删除全部记录、历史与事件。
+
+`memory_id` 与 `version` 是模型 handle：协议与面向模型的工具结果携带它们，用于精确定位与并发检查。适配器生成的用户卡片和审批说明绝不显示这些 handle。记忆工具的描述会要求模型不要在面向用户的回复中复述 ID、version、citation 或其他协议元数据，除非用户明确询问。由于适配器不控制模型的最终文本，这项要求是行为引导，不是保密边界。
 
 ## 5. TypeScript 层职责
 
@@ -223,15 +229,25 @@ Go 可执行文件统一执行协议、状态、版本、事务和完整性规�
 
 ### `memory-search`
 
-按查询条件和过滤器检索候选记忆。过滤维度包括关键词、类型、范围和时间。它只是候选检索操作，而不是对某条记忆是否相关或属实的语义裁决。
+按查询条件和过滤器检索候选记忆。query term 使用本地 SQLite FTS5 索引与 BM25 排名；kind、label 和时间仍是精确过滤条件。检索只读取有界的候选集合，并在返回前做一次轻量的应用层 term coverage 复核。它只是候选检索操作，而不是对某条记忆是否相关或属实的语义裁决。
+
+检索只有一条词法通道，不使用 embedding、外部模型、向量存储或 rank fusion，以保持本地运行与 one-shot 模式。
 
 ### `memory-get`
 
-按 `memory_id` 精确读取一条记忆，包括其完整内容、当前版本、来源、状态和替换关系。这是在提出版本敏感型写入之前使用的细粒度读取。
+按 `memory_id` 精确读取一条记忆，包括其完整内容、当前版本、来源、状态和替换关系。可选 `version` 参数改为读取该确切历史版本——回滚前的预览步骤。这是在提出版本敏感型写入之前使用的细粒度读取。
 
 ### `memory-list`
 
 以游标分页列出某工作区任意状态的全部记忆，按 `updated_at`、`memory_id` 排序。返回不含 content、source、metadata 的紧凑行；`memory-get` 才是读取完整记录的细粒度接口。
+
+### `memory-history`
+
+按 `version` 升序列出一条记忆的版本史：每项携带 version、产生该版本的操作、状态与时间，不含正文。配合 `memory-get` 的 `version` 参数支持追溯与回滚预览。
+
+### `memory-diff`
+
+比较同一记忆的两个已存在版本，只返回发生变化的字段，每项带 `from` 与 `to`。
 
 ### `memory-create`
 
@@ -306,9 +322,10 @@ Go 可执行文件统一执行协议、状态、版本、事务和完整性规�
 
 ## 10. 版本与兼容性
 
-对外只有一个版本：**应用版本（application version）**（当前 `1.0.0`），由 Go 核心与 TypeScript 适配层 bundle 共用。单一来源是 `internal/version`；`version` 子命令输出它，适配层在 `package.json` 中镜像它。发布构建可用 `-ldflags "-X .../internal/version.Version=X.Y.Z"` 覆盖。
+对外只有一个版本：**应用版本（application version）**（当前 `2.0.0`），由 Go 核心与 TypeScript 适配层 bundle 共用。单一来源是 `internal/version`；`version` 子命令输出它，适配层在 `package.json` 中镜像它。发布构建可用 `-ldflags "-X .../internal/version.Version=X.Y.Z"` 覆盖。
 
-- **协议版本跟随主版本。** `1.x.x` 实现协议 `v1`；协议发生 breaking change（协议 §11）时升为协议 `v2`，应用版本同步升到 `2.0.0`。核心与适配层必须同主版本、同协议。
+- **协议版本跟随主版本。** `2.x.x` 实现协议 `v2`（本分支）；`1.x.x` 实现协议 `v1`。协议发生 breaking change（协议 §11）时升为协议 `v3`，应用版本同步升到 `3.0.0`。核心与适配层必须同主版本、同协议。
+- **适配层会在首次工具调用前检查核心版本。** 它从自身 `package.json` 中的应用版本推导协议主版本，再运行一次内部 `version` 命令，将核心主版本与之比较。若不匹配，则在工作区解析、用户批准和业务命令之前失败，并提示用户重新安装核心。检查成功后，结果在该插件实例的生命周期内复用。
 - **SQL schema 版本是内部迁移计数器，绝不跟随发布。** 只在表结构变化时递增；打开数据库时强校验，不匹配则返回 `schema_mismatch` fail-closed，绝不静默迁移或重建数据。因此任何 `1.0.x` 的 bugfix 发布都不会让已有数据库失效。
 
 版本号只是标签；兼容性来自真正被验证的机制：Go/TS 共享 request fixtures 保证核心/适配层契约一致，`schema_version` 校验守住数据库，一切不匹配都以 fail-closed 拒绝而非静默修复。

@@ -1,0 +1,256 @@
+[
+  {
+    "name": "memory-search",
+    "command": "memory-search",
+    "request": {
+      "workspace_id": 1,
+      "query": "sqlite",
+      "limit": 8
+    }
+  },
+  {
+    "name": "memory-search-filter",
+    "command": "memory-search",
+    "request": {
+      "workspace_id": 1,
+      "filter": {
+        "created_after": "2026-01-01T00:00:00+08:00",
+        "created_before": "2026-12-31T23:59:59Z",
+        "kinds": [
+          "fact"
+        ]
+      }
+    }
+  },
+  {
+    "name": "memory-search-fts-literal",
+    "command": "memory-search",
+    "request": {
+      "workspace_id": 1,
+      "query": "sqlite NOT \"remote\""
+    }
+  },
+  {
+    "name": "memory-list",
+    "command": "memory-list",
+    "request": {
+      "workspace_id": 1,
+      "limit": 50
+    }
+  },
+  {
+    "name": "memory-list-cursor",
+    "command": "memory-list",
+    "request": {
+      "workspace_id": 1,
+      "cursor": "eyJ1cGRhdGVkX2F0IjoxNzcyMDAwMDAwLCJtZW1vcnlfaWQiOiJtZW1feCJ9"
+    }
+  },
+  {
+    "name": "memory-get",
+    "command": "memory-get",
+    "request": {
+      "workspace_id": 1,
+      "memory_id": "mem_example"
+    }
+  },
+  {
+    "name": "memory-create",
+    "command": "memory-create",
+    "request": {
+      "workspace_id": 1,
+      "content": "Use SQLite.",
+      "source": [],
+      "metadata": {
+        "nullable": null
+      },
+      "kind": "fact",
+      "label": "storage"
+    }
+  },
+  {
+    "name": "memory-update-clear",
+    "command": "memory-update",
+    "request": {
+      "workspace_id": 1,
+      "memory_id": "mem_example",
+      "expected_version": 1,
+      "source": [],
+      "metadata": {},
+      "label": ""
+    }
+  },
+  {
+    "name": "memory-supersede",
+    "command": "memory-supersede",
+    "request": {
+      "workspace_id": 1,
+      "memory_id": "mem_example",
+      "expected_version": 2,
+      "new": {
+        "content": "Use PostgreSQL.",
+        "kind": "note"
+      }
+    }
+  },
+  {
+    "name": "memory-invalidate",
+    "command": "memory-invalidate",
+    "request": {
+      "workspace_id": 1,
+      "memory_id": "mem_example",
+      "expected_version": 2
+    }
+  },
+  {
+    "name": "memory-delete",
+    "command": "memory-delete",
+    "request": {
+      "workspace_id": 1,
+      "memory_id": "mem_example",
+      "expected_version": 2
+    }
+  },
+  {
+    "name": "workspace-resolve",
+    "command": "workspace-resolve",
+    "request": {
+      "path": "/tmp/example"
+    }
+  },
+  {
+    "name": "workspace-register",
+    "command": "workspace-register",
+    "request": {
+      "path": "/tmp/example"
+    }
+  },
+  {
+    "name": "workspace-rebind",
+    "command": "workspace-rebind",
+    "request": {
+      "workspace_id": 1,
+      "path": "/tmp/new"
+    }
+  },
+  {
+    "name": "workspace-clear",
+    "command": "workspace-clear",
+    "request": {
+      "workspace_id": 1
+    }
+  },
+  {
+    "name": "workspace-delete",
+    "command": "workspace-delete",
+    "request": {
+      "workspace_id": 1
+    }
+  },
+  {
+    "name": "memory-get-version",
+    "command": "memory-get",
+    "request": {
+      "workspace_id": 1,
+      "memory_id": "mem_example",
+      "version": 2
+    }
+  },
+  {
+    "name": "memory-history",
+    "command": "memory-history",
+    "request": {
+      "workspace_id": 1,
+      "memory_id": "mem_example"
+    }
+  },
+  {
+    "name": "memory-diff",
+    "command": "memory-diff",
+    "request": {
+      "workspace_id": 1,
+      "memory_id": "mem_example",
+      "from_version": 1,
+      "to_version": 2
+    }
+  },
+  {
+    "name": "memory-create-reason",
+    "command": "memory-create",
+    "request": {
+      "workspace_id": 1,
+      "content": "Use SQLite.",
+      "reason": "local-first",
+      "kind": "note"
+    }
+  },
+  {
+    "name": "memory-update-reason",
+    "command": "memory-update",
+    "request": {
+      "workspace_id": 1,
+      "memory_id": "mem_example",
+      "expected_version": 1,
+      "content": "Use WAL.",
+      "reason": "concurrency"
+    }
+  },
+  {
+    "name": "memory-supersede-reason",
+    "command": "memory-supersede",
+    "request": {
+      "workspace_id": 1,
+      "memory_id": "mem_example",
+      "expected_version": 2,
+      "reason": "migrated",
+      "new": {
+        "content": "Use PostgreSQL.",
+        "kind": "note"
+      }
+    }
+  },
+  {
+    "name": "memory-invalidate-reason",
+    "command": "memory-invalidate",
+    "request": {
+      "workspace_id": 1,
+      "memory_id": "mem_example",
+      "expected_version": 2,
+      "reason": "no longer true"
+    }
+  },
+  {
+    "name": "memory-create-branches",
+    "command": "memory-create",
+    "request": {
+      "workspace_id": 1,
+      "content": "Use SQLite.",
+      "kind": "fact",
+      "branches": [
+        "main"
+      ]
+    }
+  },
+  {
+    "name": "memory-update-branches",
+    "command": "memory-update",
+    "request": {
+      "workspace_id": 1,
+      "memory_id": "mem_example",
+      "expected_version": 1,
+      "branches": [
+        "main",
+        "dev"
+      ]
+    }
+  },
+  {
+    "name": "memory-search-branch",
+    "command": "memory-search",
+    "request": {
+      "workspace_id": 1,
+      "query": "sqlite",
+      "branch": "main"
+    }
+  }
+]

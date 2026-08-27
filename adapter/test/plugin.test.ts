@@ -15,6 +15,7 @@ import type { ToolExecution } from "@deepseek-ai/dsh-tools";
 import { inject } from "../src/index.js";
 import { registerMemoryNoteTools } from "../src/tools.js";
 import type { MemoryNoteConfig } from "../src/tools.js";
+import { applicationVersion } from "../src/version.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const fakeScript = path.join(here, "fixtures", "fake-binary.mjs");
@@ -22,6 +23,7 @@ const workspacePath = "/registered/workspace";
 
 interface RegisteredTool {
   name: string;
+  description: string;
   execute(args: Record<string, unknown>, exec: ToolExecution): Promise<unknown>;
   output?: {
     render?: (args: unknown, value: unknown) => Array<{ type: string; text: string }>;
@@ -41,6 +43,7 @@ interface FakeApproval {
 function makeContext(
   mode = "scripted",
   outcome = "allowed-once",
+  version = applicationVersion,
 ): {
   ctx: Context;
   approval: FakeApproval;
@@ -70,6 +73,7 @@ function makeContext(
       FAKE_MODE: mode,
       FAKE_WS_PATH: workspacePath,
       FAKE_LOG: logFile,
+      FAKE_VERSION: version,
     },
   } satisfies MemoryNoteConfig);
   const calls = () => {
@@ -109,8 +113,8 @@ test("tool renders are human summaries, not raw protocol JSON", () => {
       memory_id: "mem_x",
       workspace_id: 7,
       content: "Use SQLite.",
-      type: null,
-      scope: null,
+      kind: "note",
+      label: null,
       source: [],
       metadata: {},
       state: "active",
@@ -121,12 +125,59 @@ test("tool renders are human summaries, not raw protocol JSON", () => {
       updated_at: "2026-01-01T00:00:00+00:00",
     },
   })[0]?.text ?? "";
-  assert.match(text, /记忆 mem_x/);
+  assert.match(text, /memory mem_x/);
   assert.match(text, /Use SQLite/);
   // State and dates are natural language; protocol field names stay out.
-  assert.match(text, /生效中/);
-  assert.match(text, /创建于 2026-01-01 00:00/);
+  assert.match(text, /active/);
+  assert.match(text, /created 2026-01-01 00:00/);
   assert.doesNotMatch(text, /workspace_id|created_at|metadata|"state"|"active"/);
+});
+
+test("search render carries the FTS rank and matched-term count", () => {
+  const { tools } = makeContext();
+  const search = tools.find((tool) => tool.name === "memory_search");
+  assert.ok(search?.output?.render);
+  const text = search.output.render({}, {
+    memories: [
+      {
+        memory_id: "mem_x",
+        kind: "fact",
+        label: "storage",
+        version: 2,
+        citation: { memory_id: "mem_x", version: 2 },
+        snippet: "Use SQLite in WAL mode.",
+        score: 0.000001,
+        matched_terms: 2,
+        updated_at: "2026-01-01T00:00:00+00:00",
+      },
+    ],
+  })[0]?.text ?? "";
+  assert.match(text, /score 0\.000001/);
+  assert.match(text, /matched terms 2/);
+  assert.match(text, /Use SQLite in WAL mode/);
+  // Bounded rendering adds the trust notice and the citation handle.
+  assert.match(text, /untrusted memory history/);
+  assert.match(text, /cite mem_x@2/);
+});
+
+test("search render caps the number of memories to the budget", () => {
+  const { tools } = makeContext();
+  const search = tools.find((tool) => tool.name === "memory_search");
+  assert.ok(search?.output?.render);
+  const memories = Array.from({ length: 20 }, (_, index) => ({
+    memory_id: `mem_${index}`,
+    kind: "note",
+    label: null,
+    version: 1,
+    citation: { memory_id: `mem_${index}`, version: 1 },
+    snippet: `snippet ${index}`,
+    score: 0,
+    matched_terms: 0,
+    updated_at: "2026-01-01T00:00:00+00:00",
+  }));
+  const text = search.output.render({}, { memories })[0]?.text ?? "";
+  const renderedIds = (text.match(/- mem_\d+/g) ?? []).length;
+  assert.ok(renderedIds <= 8, `rendered ${renderedIds} memories, want <= 8`);
 });
 
 test("UI cards hide protocol handles from humans", () => {
@@ -137,26 +188,37 @@ test("UI cards hide protocol handles from humans", () => {
     memory: {
       memory_id: "mem_95f5644050f649e52cae4c94a08730f6",
       content: "Use SQLite.",
-      type: "decision",
-      scope: null,
+      kind: "fact",
+      label: null,
       state: "active",
       version: 1,
     },
   };
   // presentationMeta is the persisted source of the result card content: it
-  // must never carry ids, versions, or other protocol fields.
+  // must never carry ids, versions, states, kinds, labels, or other protocol
+  // fields — only the memory content.
   const meta = create.output.presentationMeta({}, value) as { text: string };
-  assert.match(meta.text, /Use SQLite/);
-  assert.match(meta.text, /decision/);
-  assert.doesNotMatch(meta.text, /mem_|version|state|workspace_id/);
+  assert.equal(meta.text, "Use SQLite.");
+  assert.doesNotMatch(meta.text, /mem_|version|state|workspace_id|fact|kind|label/);
 });
 
-test("apply registers exactly the 13 business tools", () => {
+test("apply registers exactly the 15 business tools", () => {
   const { tools } = makeContext();
-  assert.equal(tools.length, 13);
+  assert.equal(tools.length, 15);
   const names = tools.map((tool) => tool.name);
   assert.ok(names.includes("memory_create") && names.includes("workspace_register"));
+  assert.ok(names.includes("memory_history") && names.includes("memory_diff"));
   assert.ok(!names.includes("version") && !names.includes("help"));
+});
+
+test("memory tool descriptions keep protocol metadata out of user replies", () => {
+  const { tools } = makeContext();
+  const memoryTools = tools.filter((tool) => tool.name.startsWith("memory_"));
+  assert.equal(memoryTools.length, 10);
+  for (const tool of memoryTools) {
+    assert.match(tool.description, /internal tool state/);
+    assert.match(tool.description, /Do not repeat them in user-facing replies/);
+  }
 });
 
 test("read tools run without asking approval", async () => {
@@ -168,23 +230,60 @@ test("read tools run without asking approval", async () => {
   assert.equal(approval.asked.length, 0);
 });
 
+test("memory_search injects the git branch from the environment", async () => {
+  const previous = process.env.DSH_MEMORY_NOTE_GIT_BRANCH;
+  process.env.DSH_MEMORY_NOTE_GIT_BRANCH = "main";
+  try {
+    const { tools, calls } = makeContext();
+    const search = tools.find((tool) => tool.name === "memory_search");
+    assert.ok(search);
+    await search.execute({ query: "sqlite" }, fakeExec(workspacePath));
+    const searchCalls = calls().filter((entry) => entry.subcommand === "memory-search");
+    assert.equal(searchCalls.length, 1);
+    assert.equal(searchCalls[0]?.request.branch, "main");
+  } finally {
+    if (previous === undefined) {
+      delete process.env.DSH_MEMORY_NOTE_GIT_BRANCH;
+    } else {
+      process.env.DSH_MEMORY_NOTE_GIT_BRANCH = previous;
+    }
+  }
+});
+
+test("a v1 core is rejected before any business command", async () => {
+  const { approval, tools, calls } = makeContext("scripted", "allowed-once", "1.0.0");
+  const create = tools.find((tool) => tool.name === "memory_create");
+  assert.ok(create);
+  await assert.rejects(
+    create.execute({ content: "Use SQLite.", kind: "fact" }, fakeExec(workspacePath)),
+    /core version 1\.0\.0.*requires protocol v2.*reinstall/,
+  );
+  assert.equal(approval.asked.length, 0);
+  assert.deepEqual(calls(), []);
+});
+
 test("write tools ask approval once and pass the resolved workspace_id", async () => {
   const { approval, tools, calls } = makeContext();
   const create = tools.find((tool) => tool.name === "memory_create");
   assert.ok(create);
-  const value = await create.execute({ content: "Use SQLite." }, fakeExec(workspacePath));
+  const value = await create.execute(
+    { content: "Use SQLite.", kind: "fact", branches: ["main"] },
+    fakeExec(workspacePath),
+  );
   assert.equal((value as { memory: { workspace_id: number } }).memory.workspace_id, 7);
   assert.equal(approval.asked.length, 1);
   assert.equal(approval.asked[0]?.toolName, "memory_create");
   const reason = approval.asked[0]?.reason ?? "";
-  assert.match(reason, /记录新记忆/);
+  assert.match(reason, /record new memory/);
   assert.match(reason, /Use SQLite/);
+  assert.match(reason, /branches: main/);
   // The approval reason is a human sentence: no subcommand name, no raw JSON.
   assert.doesNotMatch(reason, /memory_create|workspace_id|"content"/);
   const commands = calls();
   assert.equal(commands[0]?.subcommand, "workspace-resolve");
   assert.equal(commands[1]?.subcommand, "memory-create");
   assert.equal(commands[1]?.request.workspace_id, 7);
+  assert.deepEqual(commands[1]?.request.branches, ["main"]);
 });
 
 test("supersede approval identifies the memory by content, never by id", async () => {
@@ -192,11 +291,11 @@ test("supersede approval identifies the memory by content, never by id", async (
   const supersede = tools.find((tool) => tool.name === "memory_supersede");
   assert.ok(supersede);
   await supersede.execute(
-    { memory_id: "mem_old", expected_version: 1, new: { content: "Use PostgreSQL." } },
+    { memory_id: "mem_old", expected_version: 1, new: { content: "Use PostgreSQL.", kind: "fact" } },
     fakeExec(workspacePath),
   );
   const reason = approval.asked[0]?.reason ?? "";
-  assert.match(reason, /旧记忆内容/);
+  assert.match(reason, /old memory content/);
   assert.match(reason, /Use PostgreSQL/);
   assert.doesNotMatch(reason, /mem_old/);
 });
@@ -205,7 +304,7 @@ test("denied approval fails the write before spawning it", async () => {
   const { approval, tools, calls } = makeContext("scripted", "rejected");
   const create = tools.find((tool) => tool.name === "memory_create");
   assert.ok(create);
-  await assert.rejects(create.execute({ content: "blocked" }, fakeExec(workspacePath)), /not granted/);
+  await assert.rejects(create.execute({ content: "blocked", kind: "note" }, fakeExec(workspacePath)), /not granted/);
   assert.equal(approval.asked.length, 1);
   const writes = calls().filter((entry) => entry.subcommand !== "workspace-resolve");
   assert.equal(writes.length, 0);
@@ -215,7 +314,7 @@ test("write without agent context fails closed", async () => {
   const { tools } = makeContext();
   const create = tools.find((tool) => tool.name === "memory_create");
   assert.ok(create);
-  await assert.rejects(create.execute({ content: "x" }, fakeExec()), /no session cwd/);
+  await assert.rejects(create.execute({ content: "x", kind: "note" }, fakeExec()), /no session cwd/);
 });
 
 test("unregistered agent cwd fails with guidance", async () => {
@@ -240,6 +339,6 @@ test("Go protocol errors surface as natural-language messages", async () => {
   assert.ok(get);
   await assert.rejects(
     get.execute({ workspace_id: 1, memory_id: "mem_x" }, fakeExec(workspacePath)),
-    /该记忆已被其他操作更新/,
+    /the memory changed since it was read/,
   );
 });

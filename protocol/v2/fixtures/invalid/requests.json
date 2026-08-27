@@ -1,0 +1,72 @@
+[
+  {
+    "name": "duplicate-field",
+    "command": "memory-get",
+    "raw": "{\"workspace_id\":1,\"workspace_id\":2,\"memory_id\":\"mem_x\"}"
+  },
+  {
+    "name": "trailing-value",
+    "command": "workspace-clear",
+    "raw": "{\"workspace_id\":1} {}"
+  },
+  {
+    "name": "unknown-field",
+    "command": "memory-get",
+    "raw": "{\"workspace_id\":1,\"memory_id\":\"mem_x\",\"extra\":true}"
+  },
+  {
+    "name": "null-field",
+    "command": "memory-update",
+    "raw": "{\"workspace_id\":1,\"memory_id\":\"mem_x\",\"expected_version\":1,\"source\":null}"
+  },
+  {
+    "name": "decimal-integer",
+    "command": "memory-get",
+    "raw": "{\"workspace_id\":1.0,\"memory_id\":\"mem_x\"}"
+  },
+  {
+    "name": "exponent-integer",
+    "command": "memory-get",
+    "raw": "{\"workspace_id\":1e0,\"memory_id\":\"mem_x\"}"
+  },
+  {
+    "name": "old-envelope",
+    "command": "workspace-resolve",
+    "raw": "{\"protocol_version\":1,\"request_id\":\"old\",\"params\":{\"path\":\"/tmp/example\"}}"
+  },
+  {
+    "name": "old-update-patch",
+    "command": "memory-update",
+    "raw": "{\"workspace_id\":1,\"memory_id\":\"mem_x\",\"expected_version\":1,\"patch\":{\"content\":\"x\"}}"
+  },
+  {
+    "name": "control-character",
+    "command": "memory-get",
+    "raw": "{\"workspace_id\":1,\"memory_id\":\"mem_\\u0001x\"}"
+  },
+  {
+    "name": "timestamp-no-offset",
+    "command": "memory-search",
+    "raw": "{\"workspace_id\":1,\"filter\":{\"created_after\":\"2026-01-01T00:00:00\"}}"
+  },
+  {
+    "name": "timestamp-fraction",
+    "command": "memory-search",
+    "raw": "{\"workspace_id\":1,\"filter\":{\"created_after\":\"2026-01-01T00:00:00.5Z\"}}"
+  },
+  {
+    "name": "get-version-string",
+    "command": "memory-get",
+    "raw": "{\"workspace_id\": 1, \"memory_id\": \"mem_example\", \"version\": \"two\"}"
+  },
+  {
+    "name": "history-unknown-field",
+    "command": "memory-history",
+    "raw": "{\"workspace_id\": 1, \"memory_id\": \"mem_example\", \"extra\": true}"
+  },
+  {
+    "name": "create-reason-number",
+    "command": "memory-create",
+    "raw": "{\"workspace_id\": 1, \"content\": \"x\", \"reason\": 42}"
+  }
+]

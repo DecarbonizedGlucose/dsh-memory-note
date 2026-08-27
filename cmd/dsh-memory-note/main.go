@@ -23,6 +23,8 @@ subcommands:
     memory-search
     memory-list
     memory-get
+    memory-history
+    memory-diff
     memory-create
     memory-update
     memory-supersede

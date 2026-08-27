@@ -8,12 +8,28 @@ const (
 	MemoryInvalid    = "invalid"
 )
 
+// MemoryKind enumerates the memory tracks that drive lifecycle and injection.
+// fact = a durable conclusion worth injecting into context (a fact, preference,
+// decision, constraint, or convention); note = a transient working note that is
+// read on demand and never injected.
+var MemoryKinds = []string{"fact", "note"}
+
+func ValidMemoryKind(value string) bool {
+	for _, kind := range MemoryKinds {
+		if kind == value {
+			return true
+		}
+	}
+	return false
+}
+
 type Memory struct {
 	ID           string         `json:"memory_id"`
 	WorkspaceID  int64          `json:"workspace_id"`
 	Content      string         `json:"content"`
-	Type         *string        `json:"type"`
-	Scope        *string        `json:"scope"`
+	Kind         string         `json:"kind"`
+	Label        *string        `json:"label"`
+	Branches     []string       `json:"branches"`
 	Source       []string       `json:"source"`
 	Metadata     map[string]any `json:"metadata"`
 	State        string         `json:"state"`
@@ -26,15 +42,16 @@ type Memory struct {
 
 type MemoryInput struct {
 	Content  string         `json:"content"`
-	Type     *string        `json:"type,omitempty"`
-	Scope    *string        `json:"scope,omitempty"`
+	Kind     string         `json:"kind"`
+	Label    *string        `json:"label,omitempty"`
+	Branches []string       `json:"branches,omitempty"`
 	Source   []string       `json:"source,omitempty"`
 	Metadata map[string]any `json:"metadata,omitempty"`
 }
 
 type SearchFilter struct {
-	Types         []string   `json:"types,omitempty"`
-	Scopes        []string   `json:"scopes,omitempty"`
+	Kinds         []string   `json:"kinds,omitempty"`
+	Labels        []string   `json:"labels,omitempty"`
 	CreatedAfter  *Timestamp `json:"created_after,omitempty"`
 	CreatedBefore *Timestamp `json:"created_before,omitempty"`
 	UpdatedAfter  *Timestamp `json:"updated_after,omitempty"`
@@ -42,20 +59,29 @@ type SearchFilter struct {
 }
 
 type SearchHit struct {
-	ID        string    `json:"memory_id"`
-	Type      *string   `json:"type"`
-	Scope     *string   `json:"scope"`
-	Version   int64     `json:"version"`
-	Snippet   string    `json:"snippet"`
-	Score     float64   `json:"score"`
-	UpdatedAt Timestamp `json:"updated_at"`
+	ID           string    `json:"memory_id"`
+	Kind         string    `json:"kind"`
+	Label        *string   `json:"label"`
+	Version      int64     `json:"version"`
+	Citation     Citation  `json:"citation"`
+	Snippet      string    `json:"snippet"`
+	Score        float64   `json:"score"`
+	MatchedTerms int       `json:"matched_terms"`
+	UpdatedAt    Timestamp `json:"updated_at"`
+}
+
+// Citation is the exact reference to one version of a memory, used to seed a
+// later mutation's memory_id + expected_version.
+type Citation struct {
+	MemoryID string `json:"memory_id"`
+	Version  int64  `json:"version"`
 }
 
 // ListItem is the compact row returned by memory-list.
 type ListItem struct {
 	ID           string    `json:"memory_id"`
-	Type         *string   `json:"type"`
-	Scope        *string   `json:"scope"`
+	Kind         string    `json:"kind"`
+	Label        *string   `json:"label"`
 	State        string    `json:"state"`
 	Version      int64     `json:"version"`
 	Supersedes   *string   `json:"supersedes"`
@@ -79,6 +105,7 @@ type MemorySearchRequest struct {
 	Query       string        `json:"query,omitempty"`
 	Filter      *SearchFilter `json:"filter,omitempty"`
 	Limit       *int          `json:"limit,omitempty"`
+	Branch      *string       `json:"branch,omitempty"`
 }
 type MemorySearchData struct {
 	Memories []SearchHit `json:"memories"`
@@ -97,12 +124,50 @@ type MemoryListData struct {
 type MemoryGetRequest struct {
 	WorkspaceID int64  `json:"workspace_id"`
 	MemoryID    string `json:"memory_id"`
+	Version     *int64 `json:"version,omitempty"`
 }
 type MemoryGetData struct{ MemoryResult }
+
+// HistoryItem is one version row of memory-history.
+type HistoryItem struct {
+	Version    int64      `json:"version"`
+	Action     string     `json:"action"`
+	State      string     `json:"state"`
+	UpdatedAt  Timestamp  `json:"updated_at"`
+	ArchivedAt *Timestamp `json:"archived_at"`
+}
+
+type MemoryHistoryRequest struct {
+	WorkspaceID int64  `json:"workspace_id"`
+	MemoryID    string `json:"memory_id"`
+}
+type MemoryHistoryData struct {
+	Versions []HistoryItem `json:"versions"`
+}
+
+type MemoryDiffRequest struct {
+	WorkspaceID int64  `json:"workspace_id"`
+	MemoryID    string `json:"memory_id"`
+	FromVersion int64  `json:"from_version"`
+	ToVersion   int64  `json:"to_version"`
+}
+
+type MemoryDiffChange struct {
+	Field string `json:"field"`
+	From  any    `json:"from"`
+	To    any    `json:"to"`
+}
+
+type MemoryDiffData struct {
+	FromVersion int64              `json:"from_version"`
+	ToVersion   int64              `json:"to_version"`
+	Changes     []MemoryDiffChange `json:"changes"`
+}
 
 type MemoryCreateRequest struct {
 	WorkspaceID int64 `json:"workspace_id"`
 	MemoryInput
+	Reason string `json:"reason,omitempty"`
 }
 type MemoryCreateData struct{ MemoryResult }
 
@@ -111,23 +176,29 @@ type MemoryUpdateRequest struct {
 	MemoryID        string          `json:"memory_id"`
 	ExpectedVersion int64           `json:"expected_version"`
 	Content         *string         `json:"content,omitempty"`
-	Type            *string         `json:"type,omitempty"`
-	Scope           *string         `json:"scope,omitempty"`
+	Kind            *string         `json:"kind,omitempty"`
+	Label           *string         `json:"label,omitempty"`
+	Branches        *[]string       `json:"branches,omitempty"`
 	Source          *[]string       `json:"source,omitempty"`
 	Metadata        *map[string]any `json:"metadata,omitempty"`
+	Reason          string          `json:"reason,omitempty"`
 }
 type MemoryUpdateData struct{ MemoryResult }
 
 type MemorySupersedeRequest struct {
 	MemoryTarget
-	New MemoryInput `json:"new"`
+	New    MemoryInput `json:"new"`
+	Reason string      `json:"reason,omitempty"`
 }
 type MemorySupersedeData struct {
 	Old Memory `json:"old"`
 	New Memory `json:"new"`
 }
 
-type MemoryInvalidateRequest struct{ MemoryTarget }
+type MemoryInvalidateRequest struct {
+	MemoryTarget
+	Reason string `json:"reason,omitempty"`
+}
 type MemoryInvalidateData struct{ MemoryResult }
 
 type MemoryDeleteRequest struct{ MemoryTarget }

@@ -13,7 +13,7 @@ export interface CoreOptions {
   env?: NodeJS.ProcessEnv;
 }
 
-/** The Go error-code closed set (protocol §9), surfaced for programmatic use. */
+/** Core protocol errors plus adapter-side process and compatibility errors. */
 export const CoreErrorCode = {
   InvalidRequest: "invalid_request",
   HomeBroken: "home_broken",
@@ -27,6 +27,7 @@ export const CoreErrorCode = {
   InvalidMemoryState: "invalid_memory_state",
   InternalError: "internal_error",
   BinaryNotFound: "binary_not_found",
+  VersionMismatch: "version_mismatch",
   UnknownResult: "unknown_result",
 } as const;
 
@@ -41,8 +42,90 @@ export class CoreError extends Error {
 }
 
 const MAX_STDOUT_BYTES = 64 * 1024 * 1024;
+const MAX_VERSION_BYTES = 256;
 
 export type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };
+
+/**
+ * Reads the core's application version and checks its protocol major version.
+ * This uses the internal `version` command, which prints plain text rather
+ * than a JSON envelope.
+ */
+export function checkCoreVersion(options: CoreOptions, expectedMajor: number): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const env: NodeJS.ProcessEnv = { ...process.env, ...options.env };
+    if (options.home !== undefined) env.DSH_MEMORY_NOTE_HOME = options.home;
+
+    const child = spawn(options.binaryPath, ["version"], {
+      env,
+      stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true,
+    });
+
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+
+    const fail = (code: string, message: string) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      child.kill();
+      reject(new CoreError(code, message));
+    };
+
+    const timer = setTimeout(
+      () => fail(CoreErrorCode.UnknownResult, `core version check exceeded ${options.timeoutMs} ms`),
+      options.timeoutMs,
+    );
+
+    child.stdout.on("data", (chunk: Buffer) => {
+      if (settled) return;
+      stdout += chunk.toString();
+      if (stdout.length > MAX_VERSION_BYTES) {
+        fail(CoreErrorCode.UnknownResult, "core version output exceeded 256 bytes");
+      }
+    });
+    child.stderr.on("data", (chunk: Buffer) => {
+      stderr += chunk.toString();
+    });
+    child.on("error", (err) => {
+      fail(CoreErrorCode.BinaryNotFound, `cannot start core: ${err.message}`);
+    });
+    child.on("close", (code, killedBy) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+
+      if (killedBy !== null) {
+        reject(new CoreError(CoreErrorCode.UnknownResult, `core version check killed by ${killedBy}${diagnostics(stderr)}`));
+        return;
+      }
+      if (code !== 0) {
+        reject(new CoreError(CoreErrorCode.UnknownResult, `core version check exited with code ${code}${diagnostics(stderr)}`));
+        return;
+      }
+
+      const version = stdout.trim();
+      const match = /^(\d+)\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.exec(version);
+      if (match === null) {
+        reject(new CoreError(CoreErrorCode.UnknownResult, "core version output is invalid"));
+        return;
+      }
+      const actualMajor = Number(match[1]);
+      if (actualMajor !== expectedMajor) {
+        reject(
+          new CoreError(
+            CoreErrorCode.VersionMismatch,
+            `core version ${version} implements protocol v${actualMajor}, but this adapter requires protocol v${expectedMajor}; reinstall dsh-memory-note and restart the profile`,
+          ),
+        );
+        return;
+      }
+      resolve(version);
+    });
+  });
+}
 
 /**
  * Runs one subcommand and resolves with the response `data` object. Go

@@ -2,7 +2,18 @@
 // Scripted stand-in for the Go binary used by unit tests. Executed directly
 // (shebang), so its argv (process.argv.slice(2)) is exactly
 // [subcommand, request-json] — the same argv shape the real binary receives.
-import { appendFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
+
+// The fallback core version mirrors the adapter package version, so the fake
+// always simulates a core whose protocol major matches this adapter by
+// default. FAKE_VERSION overrides it when a test wants a mismatched core.
+let packageVersion = "0.0.0";
+try {
+  packageVersion = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8")).version;
+} catch {
+  // decode errors fall back to a benign version; FAKE_VERSION still wins.
+}
+const defaultVersion = typeof packageVersion === "string" ? packageVersion : "0.0.0";
 
 const mode = process.env.FAKE_MODE ?? "ok";
 const args = process.argv.slice(2);
@@ -14,6 +25,11 @@ try {
   // invalid JSON: scripted mode only cares about well-formed calls
 }
 
+if (subcommand === "version") {
+  writeFileSync(1, `${process.env.FAKE_VERSION ?? defaultVersion}\n`);
+  process.exit(0);
+}
+
 if (process.env.FAKE_ECHO_FILE) {
   writeFileSync(process.env.FAKE_ECHO_FILE, JSON.stringify(args));
 }
@@ -22,11 +38,11 @@ if (process.env.FAKE_LOG) {
 }
 
 function respond(data) {
-  process.stdout.write(JSON.stringify({ ok: true, data }));
+  writeFileSync(1, JSON.stringify({ ok: true, data }));
   process.exit(0);
 }
 function fail(code, message) {
-  process.stdout.write(JSON.stringify({ ok: false, error: { code, message } }));
+  writeFileSync(1, JSON.stringify({ ok: false, error: { code, message } }));
   process.exit(1);
 }
 
@@ -34,8 +50,9 @@ const memory = (req) => ({
   memory_id: "mem_fake",
   workspace_id: req.workspace_id,
   content: req.content ?? "",
-  type: null,
-  scope: null,
+  kind: "fact",
+  label: null,
+  branches: req.branches ?? null,
   source: [],
   metadata: {},
   state: "active",
@@ -83,7 +100,7 @@ if (mode === "usage") {
       respond({ memories: [] });
       break;
     case "memory-get":
-      respond({ memory: memory({ ...request, content: "旧记忆内容" }) });
+      respond({ memory: memory({ ...request, content: "old memory content" }) });
       break;
     default:
       respond({});

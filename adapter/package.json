@@ -1,6 +1,6 @@
 {
   "name": "dsh-memory-note",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "private": true,
   "type": "module",
   "main": "dist/index.js",
@@ -13,7 +13,7 @@
     "prepare": "pnpm build",
     "typecheck": "tsc --noEmit",
     "test": "node --import tsx --test test/*.test.ts",
-    "test:integration": "RUN_INTEGRATION=1 node --import tsx --test test/integration.test.ts",
+    "test:integration": "node --import tsx --test test/integration.test.ts",
     "check": "pnpm typecheck && pnpm test"
   },
   "dsh": {

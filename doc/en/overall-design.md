@@ -1,6 +1,6 @@
 # Overall Design
 
-This document defines the overall design of `dsh-memory-note`. It defines the runtime structure, component responsibilities, storage boundaries, concurrency model, and memory lifecycle. The exact JSON request, response, and error contracts are defined separately by `protocol-v1-proposal.md`.
+This document defines the overall design of `dsh-memory-note`. It defines the runtime structure, component responsibilities, storage boundaries, concurrency model, and memory lifecycle. The exact JSON request, response, and error contracts are defined separately by `protocol-v2-proposal.md`.
 
 The project is local and lightweight. Its core responsibilities are safe one-shot execution, workspace identity independent of paths, cross-process coordination, explicit memory state transitions, optimistic version checks, and a strict user-approval boundary.
 
@@ -109,6 +109,8 @@ WIDs are stable and are not reused after workspace deletion.
 
 Each workspace has one dedicated `workspace-{WID}-memory.db`. It stores only that workspace's memories, states, versions, metadata, sources, replacement relationships, and archived historical versions.
 
+Each memory database also contains an FTS5 index over the current rows' `content`, `kind`, and `label`. `memories` remains the authoritative table. SQLite triggers update the index in the same transaction as each memory write, and the index can be rebuilt from `memories` without changing memory data.
+
 No query or transaction may combine memory rows from different workspace databases. The WID from `meta.db`, not a request-supplied file path, determines which database file is opened.
 
 SQLite transactions remain responsible for atomic changes inside a memory database. The cross-process lock in `meta.db` coordinates access to the database file and workspace lifecycle; it does not replace SQLite transactions.
@@ -137,7 +139,7 @@ The platform-specific concerns are:
 
 On Windows, workspace paths are lowercased before being stored in the database. Registering and resolving a workspace both apply this normalization, so the case variant a caller uses does not produce a different WID. The adapter never lowercases paths; normalization is a core-only responsibility applied at the register and resolve boundary.
 
-The install and uninstall entry points are likewise platform-specific: `scripts/install.sh` / `scripts/uninstall.sh` for Unix-like shells, and `scripts/install.ps1` / `scripts/uninstall.ps1` for Windows PowerShell.
+The install, update, and uninstall entry points are platform-specific: `scripts/install.sh` / `scripts/update.sh` / `scripts/uninstall.sh` for Unix-like shells, and `scripts/install.ps1` / `scripts/update.ps1` / `scripts/uninstall.ps1` for Windows PowerShell. Update scripts rebuild the core and linked adapter after the source checkout changes. They do not register plugins or touch the memory-data directory.
 
 ## 3. Cross-process read/write locks
 
@@ -175,16 +177,20 @@ Memory database transactions provide atomicity for each command:
 - `memory-create`, `memory-update`, `memory-invalidate`, and `memory-delete` each complete in one transaction;
 - `memory-supersede` changes the old record, creates the new record, and establishes both relationship fields in one transaction;
 - `workspace-clear` removes all memory rows in one transaction;
-- `memory-search` and `memory-list` run in read-only transactions and never mutate data;
+- `memory-search`, `memory-list`, `memory-get`, `memory-history`, and `memory-diff` run in read-only transactions and never mutate data;
 - a successful response is emitted only after the transaction commits.
 
 All SQL values use bound parameters. Foreign-key enforcement is enabled for every connection. SQLite busy handling is bounded; it must not cause an invocation to wait forever.
 
 Each memory has a monotonically increasing `version`. Mutating an existing memory requires `expected_version`; comparison and mutation occur in the same transaction. A mismatch returns `version_conflict` without changing data.
 
-This is optimistic concurrency control with MVCC-like version semantics at the application level. It prevents stale LLM proposals or concurrent Sessions from silently overwriting a newer fact. It is not a promise that every historical version remains queryable.
+This is optimistic concurrency control with MVCC-like version semantics at the application level. It prevents stale LLM proposals or concurrent Sessions from silently overwriting a newer fact.
 
-Every successful `memory-update`, `memory-supersede`, or `memory-invalidate` archives the replaced record as an internal historical version. `memory-delete` removes the current record together with all of its archived versions, and `workspace-clear` removes all records and all history in one transaction. Historical versions are internal audit data and are never exposed through the JSON protocol.
+Every successful `memory-update`, `memory-supersede`, or `memory-invalidate` archives the replaced record as a historical version carrying the operation (`action`) that produced it; every mutation also writes one lightweight `memory_events` row (action, from/to version, related ID, reason, time — no content) in the same transaction. Historical versions are readable through `memory-get` with a `version` argument and through `memory-history`; events are internal audit data not exposed by any read command.
+
+A rollback is an ordinary `memory-update` whose content copies a previously read historical version; the version increments (append-only) and no version is ever deleted by a rollback. `memory-delete` removes the current record together with all of its archived versions and its events, and `workspace-clear` removes all records, history, and events in one transaction.
+
+`memory_id` and `version` are model handles: the protocol and model-facing tool results carry them for precise location and concurrency checks. User-facing cards and approval descriptions produced by the adapter never show these handles. Memory tool descriptions tell the model to keep IDs, versions, citations, and other protocol metadata out of user-facing replies unless the user explicitly asks for them. This instruction is guidance rather than a confidentiality boundary because the adapter does not control the model's final text.
 
 ## 5. TypeScript layer responsibilities
 
@@ -223,15 +229,25 @@ The eight public memory subcommands are:
 
 ### `memory-search`
 
-Retrieves candidate memories by query and filter. Filtering dimensions include keywords, type, scope, and time. It is a candidate retrieval operation, not a semantic decision that a memory is relevant or true.
+Retrieves candidate memories by query and filter. Query terms use the local SQLite FTS5 index and BM25 ranking; kind, label, and time remain exact filters. Search reads at most a bounded candidate set and performs a small application-level term-coverage check before returning results. It is a candidate retrieval operation, not a semantic decision that a memory is relevant or true.
+
+Search has one lexical channel. It does not use embeddings, an external model, vector storage, or rank fusion. This keeps retrieval local and preserves one-shot execution.
 
 ### `memory-get`
 
-Reads one memory precisely by `memory_id`, including its full content, current version, source, state, and replacement relationship. This is the fine-grained read used before proposing a version-sensitive write.
+Reads one memory precisely by `memory_id`, including its full content, current version, source, state, and replacement relationship. An optional `version` argument reads that exact historical version instead of the current one — the preview step before a rollback. This is the fine-grained read used before proposing a version-sensitive write.
 
 ### `memory-list`
 
 Lists the memories of a workspace in any state, ordered by `updated_at` and then `memory_id`, with cursor pagination. It returns compact rows without content, sources, or metadata; `memory-get` is the fine-grained read for a full record.
+
+### `memory-history`
+
+Lists the version history of one memory in ascending `version` order: each entry carries version, the action that produced it, its state and timestamps, without content. Combined with `memory-get`'s `version` argument it supports tracing and rollback preview.
+
+### `memory-diff`
+
+Compares two existing versions of one memory and returns only the fields that changed, each with `from` and `to`.
 
 ### `memory-create`
 
@@ -306,9 +322,10 @@ If the process terminates before emitting a valid response, the adapter reports 
 
 ## 10. Versioning and compatibility
 
-There is exactly one user-facing version: the **application version** (currently `1.0.0`), shared by the Go core and the TypeScript adapter bundle. Its single source is `internal/version`; the `version` subcommand prints it and the adapter mirrors it in `package.json`. Release builds may override it with `-ldflags "-X .../internal/version.Version=X.Y.Z"`.
+There is exactly one user-facing version: the **application version** (currently `2.0.0`), shared by the Go core and the TypeScript adapter bundle. Its single source is `internal/version`; the `version` subcommand prints it and the adapter mirrors it in `package.json`. Release builds may override it with `-ldflags "-X .../internal/version.Version=X.Y.Z"`.
 
-- **The protocol version tracks the major component.** Releases `1.x.x` implement protocol `v1`; a protocol breaking change (protocol §11) becomes protocol `v2` and bumps the application version to `2.0.0`. The core and the adapter must share the same major version and protocol.
+- **The protocol version tracks the major component.** Releases `2.x.x` implement protocol `v2` (this branch); protocol `v1` was implemented by `1.x.x`. A protocol breaking change (protocol §11) becomes protocol `v3` and bumps the application version to `3.0.0`. The core and the adapter must share the same major version and protocol.
+- **The adapter checks the core before its first tool call.** It derives its protocol major from the application version in its own `package.json`, runs the internal `version` command once, and compares the reported core major with it. A mismatch fails before workspace resolution, approval, or any business command, with an error that tells the user to reinstall the core. A successful check is kept for the lifetime of that plugin instance.
 - **The SQL schema version is an internal migration counter and never follows releases.** It increments only when table structures change; opening a database checks it and fails closed with `schema_mismatch` — data is never silently migrated or rebuilt. A `1.0.x` bugfix release therefore never invalidates existing databases.
 
 Version numbers are labels; compatibility comes from the mechanisms that are actually exercised: the shared Go/TS request fixtures pin the core/adapter contract, the `schema_version` gate pins databases, and every mismatch fails closed instead of being repaired silently.
