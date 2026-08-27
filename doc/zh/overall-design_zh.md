@@ -190,7 +190,7 @@ SQLite 事务仍然负责记忆数据库内部的原子变更。`meta.db` 中的
 
 回滚是一次普通 `memory-update`，其 content 复制事先读取的历史版本；version 递增（append-only），回滚永不删除任何版本。`memory-delete` 删除当前记录及其全部归档版本与事件；`workspace-clear` 在一个事务内删除全部记录、历史与事件。
 
-`memory_id` 与 `version` 是模型 handle：协议携带它们用于精确定位与并发检查，但适配层的用户可见面只渲染记忆内容，绝不显示这些 handle。
+`memory_id` 与 `version` 是模型 handle：协议与面向模型的工具结果携带它们，用于精确定位与并发检查。适配器生成的用户卡片和审批说明绝不显示这些 handle。记忆工具的描述会要求模型不要在面向用户的回复中复述 ID、version、citation 或其他协议元数据，除非用户明确询问。由于适配器不控制模型的最终文本，这项要求是行为引导，不是保密边界。
 
 ## 5. TypeScript 层职责
 

@@ -292,6 +292,9 @@ const TOOL_NAMES: Record<string, { name: string; description: string }> = {
   },
 };
 
+const USER_REPLY_GUIDANCE =
+  "Treat memory IDs, versions, citations, and protocol metadata as internal tool state. Do not repeat them in user-facing replies unless the user explicitly asks; normally summarize memory content only.";
+
 type Renderer = (args: unknown, value: Record<string, JsonValue>) => Array<{ type: "text"; text: string }>;
 
 // Natural-language labels for displayable protocol values (design principles).
@@ -552,13 +555,16 @@ export function registerMemoryNoteTools(ctx: Context, config: MemoryNoteConfig):
   for (const subcommand of Object.keys(parameterSpecs)) {
     const spec = TOOL_NAMES[subcommand];
     const parameters = parameterSpecs[subcommand];
+    const description = subcommand.startsWith("memory-")
+      ? `${spec.description} ${USER_REPLY_GUIDANCE}`
+      : spec.description;
     const needsWorkspaceId = "workspace_id" in parameters;
     const defaultsPath = subcommand === "workspace-resolve";
 
     ctx.tools.register(
       defineTool({
         name: spec.name,
-        description: spec.description,
+        description,
         parameters: parameters as ParametersOf,
         output: {
           // The canonical value stays complete for programmatic consumers

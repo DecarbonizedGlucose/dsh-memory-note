@@ -23,6 +23,7 @@ const workspacePath = "/registered/workspace";
 
 interface RegisteredTool {
   name: string;
+  description: string;
   execute(args: Record<string, unknown>, exec: ToolExecution): Promise<unknown>;
   output?: {
     render?: (args: unknown, value: unknown) => Array<{ type: string; text: string }>;
@@ -208,6 +209,16 @@ test("apply registers exactly the 15 business tools", () => {
   assert.ok(names.includes("memory_create") && names.includes("workspace_register"));
   assert.ok(names.includes("memory_history") && names.includes("memory_diff"));
   assert.ok(!names.includes("version") && !names.includes("help"));
+});
+
+test("memory tool descriptions keep protocol metadata out of user replies", () => {
+  const { tools } = makeContext();
+  const memoryTools = tools.filter((tool) => tool.name.startsWith("memory_"));
+  assert.equal(memoryTools.length, 10);
+  for (const tool of memoryTools) {
+    assert.match(tool.description, /internal tool state/);
+    assert.match(tool.description, /Do not repeat them in user-facing replies/);
+  }
 });
 
 test("read tools run without asking approval", async () => {

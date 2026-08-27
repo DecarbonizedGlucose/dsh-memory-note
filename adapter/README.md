@@ -57,11 +57,15 @@ set, the adapter exports it as `DSH_MEMORY_NOTE_HOME` for the child process.
 - A timeout, signal, missing executable, or malformed core response is an
   unknown result. The adapter never retries a write automatically.
 
-User-facing cards avoid raw protocol fields. Model output keeps `memory_id` and
-`version` unchanged when they are needed for a later write; other displayable
-values, including states and dates, are rendered in natural language.
-`memory_history` gives the model version numbers as handles for precise
-rollback reads, but user cards show only counts and content, never versions.
+User-facing cards and approval descriptions avoid internal handles. Model
+output keeps `memory_id` and `version` unchanged when they are needed for a
+later write; other displayable values, including states and dates, are rendered
+in natural language. Memory tool descriptions tell the model not to repeat IDs,
+versions, citations, or protocol metadata in user-facing replies unless the
+user asks for them. This is guidance, not a confidentiality boundary: the
+adapter does not control the model's final text. `memory_history` gives the
+model version numbers as handles for precise rollback reads, while user cards
+show only counts and content.
 
 ## Bounded context rendering
 

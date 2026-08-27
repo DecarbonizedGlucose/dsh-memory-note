@@ -190,7 +190,7 @@ Every successful `memory-update`, `memory-supersede`, or `memory-invalidate` arc
 
 A rollback is an ordinary `memory-update` whose content copies a previously read historical version; the version increments (append-only) and no version is ever deleted by a rollback. `memory-delete` removes the current record together with all of its archived versions and its events, and `workspace-clear` removes all records, history, and events in one transaction.
 
-`memory_id` and `version` are model handles: the protocol carries them for precise location and concurrency checks, but the adapter's user-visible surfaces render only memory content and never show these handles.
+`memory_id` and `version` are model handles: the protocol and model-facing tool results carry them for precise location and concurrency checks. User-facing cards and approval descriptions produced by the adapter never show these handles. Memory tool descriptions tell the model to keep IDs, versions, citations, and other protocol metadata out of user-facing replies unless the user explicitly asks for them. This instruction is guidance rather than a confidentiality boundary because the adapter does not control the model's final text.
 
 ## 5. TypeScript layer responsibilities
 
