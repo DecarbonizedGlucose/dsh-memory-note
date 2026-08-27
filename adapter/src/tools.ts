@@ -463,11 +463,7 @@ const renderers: Record<string, Renderer> = {
 // timestamps, or other protocol fields.
 
 function cleanMemoryText(memory: Record<string, JsonValue>): string {
-  const content = typeof memory.content === "string" ? memory.content : "";
-  const tags: string[] = [];
-  if (typeof memory.kind === "string" && memory.kind !== "") tags.push(KIND_LABELS[memory.kind] ?? memory.kind);
-  if (typeof memory.label === "string" && memory.label !== "") tags.push(memory.label);
-  return tags.length > 0 ? `${content}\n[${tags.join(" · ")}]` : content;
+  return typeof memory.content === "string" ? memory.content : "";
 }
 
 const resultTitles: Record<string, string> = {

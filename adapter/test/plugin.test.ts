@@ -194,11 +194,11 @@ test("UI cards hide protocol handles from humans", () => {
     },
   };
   // presentationMeta is the persisted source of the result card content: it
-  // must never carry ids, versions, or other protocol fields.
+  // must never carry ids, versions, states, kinds, labels, or other protocol
+  // fields — only the memory content.
   const meta = create.output.presentationMeta({}, value) as { text: string };
-  assert.match(meta.text, /Use SQLite/);
-  assert.match(meta.text, /fact/);
-  assert.doesNotMatch(meta.text, /mem_|version|state|workspace_id/);
+  assert.equal(meta.text, "Use SQLite.");
+  assert.doesNotMatch(meta.text, /mem_|version|state|workspace_id|fact|kind|label/);
 });
 
 test("apply registers exactly the 15 business tools", () => {
