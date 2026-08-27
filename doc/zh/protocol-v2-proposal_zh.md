@@ -273,7 +273,7 @@ Response data：
 {"deleted": true}
 ```
 
-删除 workspace mapping、memory DB 以及对应 WAL/SHM。WID 不得复用。mapping 存在但对应 memory DB 缺失或损坏时仍然成功：这是清理半损坏 workspace 的唯一通道。该操作不删除用户的工作区目录。
+删除 workspace mapping、memory DB 以及对应的 SQLite sidecar（`-wal`、`-shm`、`-journal`）。WID 不得复用。mapping 存在但对应 memory DB 缺失或损坏时仍然成功：这是清理半损坏 workspace 的唯一通道。该操作不删除用户的工作区目录。
 
 ## 7. Memory commands
 

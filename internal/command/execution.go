@@ -2,6 +2,8 @@ package command
 
 import (
 	"context"
+	"errors"
+	"io/fs"
 	"os"
 	"strconv"
 	"strings"
@@ -111,6 +113,11 @@ func (e *execution) checkMemoryDir(ctx context.Context) error {
 	}
 	for _, entry := range entries {
 		info, err := entry.Info()
+		if errors.Is(err, fs.ErrNotExist) {
+			// The entry vanished between ReadDir and Info — e.g. SQLite
+			// removing its rollback journal at commit. It is not a hazard.
+			continue
+		}
 		if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
 			return protocol.NewError(protocol.CodeWorkspaceBroken, "memory directory contains an untrusted file")
 		}
@@ -122,7 +129,7 @@ func (e *execution) checkMemoryDir(ctx context.Context) error {
 }
 
 func validMemoryFileName(name string) bool {
-	for _, suffix := range []string{"-memory.db", "-memory.db-wal", "-memory.db-shm"} {
+	for _, suffix := range []string{"-memory.db", "-memory.db-wal", "-memory.db-shm", "-memory.db-journal"} {
 		if strings.HasSuffix(name, suffix) {
 			wid := strings.TrimSuffix(strings.TrimPrefix(name, "workspace-"), suffix)
 			if wid == "" {

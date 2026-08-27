@@ -249,14 +249,14 @@ A **rollback** has no dedicated statement: it is a normal `update` whose content
 
 ### 3.5 File deletion
 
-After the meta transaction commits, `workspace-delete` removes `workspace-{WID}-memory.db` and its `-wal` and `-shm` files: first best-effort delete the `-wal`/`-shm`, then delete the main file; the main file must be deleted successfully, otherwise return `internal_error`. The mapping is already gone and cannot be rolled back, and leftover files are never accessed again because WIDs are not reused.
+After the meta transaction commits, `workspace-delete` removes `workspace-{WID}-memory.db` and its `-wal`, `-shm`, and `-journal` files: first best-effort delete the sidecars, then delete the main file; the main file must be deleted successfully, otherwise return `internal_error`. The mapping is already gone and cannot be rolled back, and leftover files are never accessed again because WIDs are not reused.
 
 ## 4. Open validation and corruption handling
 
 - The `meta.db` and memory DB paths must be regular files and not symlinks, otherwise return `home_broken` / `workspace_broken` respectively.
 - `PRAGMA application_id` and `PRAGMA user_version` must match the §1 identifiers: a wrong application_id → `home_broken` / `workspace_broken`; an unsupported user_version → `schema_mismatch`.
 - The header row must exist: `meta_info`'s `schema_version = 6` and its `cursor_key` must be a valid 32-byte hex value; in the memory DB's `memory_info`, `workspace_id` must match the WID being opened and `schema_version = 6`.
-- Every entry in the `memory/` directory must be a regular file, not a symlink, with a name matching the `workspace-{decimal WID}-memory.db`, `-wal`, or `-shm` pattern; any other entry → `workspace_broken`. Files whose names match the pattern but whose WID is unregistered are leftovers from `workspace-delete`; they are not treated as anomalies and are never opened.
+- Every entry in the `memory/` directory must be a regular file, not a symlink, with a name matching the `workspace-{decimal WID}-memory.db`, `-wal`, `-shm`, or `-journal` pattern; any other entry → `workspace_broken`. SQLite may create a rollback journal briefly while configuring or committing a database even though the steady-state journal mode is WAL. An entry that disappears between directory listing and inspection is treated as this normal sidecar race. Files whose names match the pattern but whose WID is unregistered are leftovers from `workspace-delete`; they are not treated as anomalies and are never opened.
 - Running `PRAGMA integrity_check` on every open is not required; when corruption is detected, report it as `workspace_broken` / `home_broken` and never silently rebuild or clear data. `workspace-delete` is the only channel for cleaning up a half-corrupted workspace.
 
 ## 5. Command-transaction matrix

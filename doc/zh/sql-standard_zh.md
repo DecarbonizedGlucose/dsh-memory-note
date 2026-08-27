@@ -249,14 +249,14 @@ CREATE INDEX memories_list ON memories(workspace_id, updated_at, memory_id);
 
 ### 3.5 文件删除
 
-`workspace-delete` 在 meta 事务提交后删除 `workspace-{WID}-memory.db` 及其 `-wal`、`-shm` 文件：先尽力删除 `-wal`/`-shm`，再删除主文件；主文件必须删除成功，否则返回 `internal_error`。mapping 已删除不可回滚，残留文件因 WID 不复用而永远不会再被访问。
+`workspace-delete` 在 meta 事务提交后删除 `workspace-{WID}-memory.db` 及其 `-wal`、`-shm`、`-journal` 文件：先尽力删除 sidecar，再删除主文件；主文件必须删除成功，否则返回 `internal_error`。mapping 已删除不可回滚，残留文件因 WID 不复用而永远不会再被访问。
 
 ## 4. 打开校验与损坏处理
 
 - `meta.db` 与 memory DB 路径必须是 regular file 且非 symlink，否则分别返回 `home_broken` / `workspace_broken`。
 - `PRAGMA application_id` 与 `PRAGMA user_version` 必须匹配 §1 的标识：application_id 错误 → `home_broken` / `workspace_broken`；user_version 不受支持 → `schema_mismatch`。
 - 表头行必须存在：`meta_info` 的 `schema_version = 6`，且其 `cursor_key` 必须是合法的 32 字节十六进制值；memory DB 的 `memory_info` 中 `workspace_id` 必须与本次打开的 WID 一致且 `schema_version = 6`。
-- `memory/` 目录内每个条目都必须是 regular file 且非 symlink，名字符合 `workspace-{十进制WID}-memory.db`、`-wal`、`-shm` 模式；出现任何其他条目 → `workspace_broken`。名字符合模式但 WID 未注册的文件属于 `workspace-delete` 留下的残留，不视为异常，也永远不会被打开。
+- `memory/` 目录内每个条目都必须是 regular file 且非 symlink，名字符合 `workspace-{十进制WID}-memory.db`、`-wal`、`-shm` 或 `-journal` 模式；出现任何其他条目 → `workspace_broken`。即使常态 journal mode 是 WAL，SQLite 在配置或提交数据库时仍可能短暂创建 rollback journal。条目若在目录枚举与检查之间消失，按这类正常 sidecar 竞态处理。名字符合模式但 WID 未注册的文件属于 `workspace-delete` 留下的残留，不视为异常，也永远不会被打开。
 - 不要求每次打开运行 `PRAGMA integrity_check`；检测到损坏时按 `workspace_broken` / `home_broken` 报告，绝不静默重建或清空数据。`workspace-delete` 是清理半损坏 workspace 的唯一通道。
 
 ## 5. 命令-事务矩阵

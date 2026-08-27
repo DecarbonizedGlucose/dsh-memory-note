@@ -159,7 +159,14 @@ func TestWorkspaceAndMemoryLifecycle(t *testing.T) {
 	if cleared.DeletedCount != 1 {
 		t.Fatalf("clear data = %#v", cleared)
 	}
+	journal := filepath.Join(storeRoot, "memory", "workspace-1-memory.db-journal")
+	if err := os.WriteFile(journal, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
 	wantData[protocol.WorkspaceDeleteData](t, call(t, ctx, storeRoot, "workspace-delete", map[string]any{"workspace_id": wid}))
+	if _, err := os.Lstat(journal); !os.IsNotExist(err) {
+		t.Fatalf("rollback journal survived workspace-delete: %v", err)
+	}
 
 	next := wantData[protocol.WorkspaceRegisterData](t,
 		call(t, ctx, storeRoot, "workspace-register", map[string]any{"path": thirdPath}))
@@ -452,7 +459,30 @@ func TestUnexpectedMemoryFileFailsClosed(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(storeRoot, "memory", "residue"), []byte("partial"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	wantError(t, call(t, ctx, storeRoot, "workspace-resolve", map[string]any{"path": project}), protocol.CodeWorkspaceBroken)
+	response := call(t, ctx, storeRoot, "workspace-resolve", map[string]any{"path": project})
+	wantError(t, response, protocol.CodeWorkspaceBroken)
+	if strings.Contains(response.Error.Message, "residue") {
+		t.Fatalf("error exposed internal directory entry: %q", response.Error.Message)
+	}
+}
+
+func TestMemoryFileNames(t *testing.T) {
+	valid := []string{
+		"workspace-1-memory.db",
+		"workspace-1-memory.db-wal",
+		"workspace-1-memory.db-shm",
+		"workspace-1-memory.db-journal",
+	}
+	for _, name := range valid {
+		if !validMemoryFileName(name) {
+			t.Errorf("validMemoryFileName(%q) = false", name)
+		}
+	}
+	for _, name := range []string{"workspace-0-memory.db-journal", "workspace-x-memory.db-journal", "workspace-1-memory.db.tmp"} {
+		if validMemoryFileName(name) {
+			t.Errorf("validMemoryFileName(%q) = true", name)
+		}
+	}
 }
 
 func TestBranchFilter(t *testing.T) {

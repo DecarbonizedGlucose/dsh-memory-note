@@ -273,7 +273,7 @@ Response data:
 {"deleted": true}
 ```
 
-Deletes the workspace mapping, the memory DB, and its WAL/SHM. The WID is never reused. If the mapping exists but the memory DB is missing or corrupt, the command still succeeds — it is the one path for cleaning up a half-broken workspace. This command does not delete the user's workspace directory.
+Deletes the workspace mapping, the memory DB, and its SQLite sidecars (`-wal`, `-shm`, and `-journal`). The WID is never reused. If the mapping exists but the memory DB is missing or corrupt, the command still succeeds — it is the one path for cleaning up a half-broken workspace. This command does not delete the user's workspace directory.
 
 ## 7. Memory commands
 
