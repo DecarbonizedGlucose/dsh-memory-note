@@ -35,6 +35,20 @@ and registers it into the profile via `dsh plugin ... add link:`.
 After installing, make sure your `GOBIN` (`$(go env GOPATH)/bin`) is on PATH
 and restart the profile (`dsh --profile <name>`) so the tools load.
 
+After pulling later changes, rebuild the core and linked adapter without
+registering the plugin again:
+
+```sh
+scripts/update.sh                 # Unix-like
+```
+
+```powershell
+.\scripts\update.ps1             # Windows
+```
+
+The update script does not modify memory data. If a release changes the
+internal SQL schema, the core fails closed instead of migrating existing data.
+
 Uninstall:
 
 ```sh

@@ -35,6 +35,19 @@ cd dsh-memory-note
 安装后请确认 `GOBIN`（`$(go env GOPATH)/bin`）在 PATH 里，并重启 profile
 （`dsh --profile <name>`）以加载工具。
 
+拉取后续修改后，可以重新构建核心与 link adapter，而不必再次注册插件：
+
+```sh
+scripts/update.sh                 # Unix 类
+```
+
+```powershell
+.\scripts\update.ps1             # Windows
+```
+
+更新脚本不会修改记忆数据。如果某个版本修改了内部 SQL schema，核心会拒绝打开
+旧数据，不会自行迁移。
+
 卸载：
 
 ```sh

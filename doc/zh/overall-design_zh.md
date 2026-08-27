@@ -139,7 +139,7 @@ SQLite 事务仍然负责记忆数据库内部的原子变更。`meta.db` 中的
 
 在 Windows 上，工作区路径在存入数据库之前会被小写化。注册与解析工作区都会应用这一规范化，因此调用方使用的大小写变体不会产生不同的 WID。适配器从不做小写化；规范化是核心在注册与解析边界上独有的职责。
 
-安装与卸载入口同样是平台相关的：Unix 类 shell 使用 `scripts/install.sh` / `scripts/uninstall.sh`，Windows PowerShell 使用 `scripts/install.ps1` / `scripts/uninstall.ps1`。
+安装、更新与卸载入口按平台区分：Unix 类 shell 使用 `scripts/install.sh` / `scripts/update.sh` / `scripts/uninstall.sh`，Windows PowerShell 使用 `scripts/install.ps1` / `scripts/update.ps1` / `scripts/uninstall.ps1`。更新脚本用于源码 checkout 变化后重新构建核心与 link adapter；它不注册插件，也不操作记忆数据目录。
 
 ## 3. 跨进程读/写锁
 

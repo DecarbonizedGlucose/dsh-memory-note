@@ -139,7 +139,7 @@ The platform-specific concerns are:
 
 On Windows, workspace paths are lowercased before being stored in the database. Registering and resolving a workspace both apply this normalization, so the case variant a caller uses does not produce a different WID. The adapter never lowercases paths; normalization is a core-only responsibility applied at the register and resolve boundary.
 
-The install and uninstall entry points are likewise platform-specific: `scripts/install.sh` / `scripts/uninstall.sh` for Unix-like shells, and `scripts/install.ps1` / `scripts/uninstall.ps1` for Windows PowerShell.
+The install, update, and uninstall entry points are platform-specific: `scripts/install.sh` / `scripts/update.sh` / `scripts/uninstall.sh` for Unix-like shells, and `scripts/install.ps1` / `scripts/update.ps1` / `scripts/uninstall.ps1` for Windows PowerShell. Update scripts rebuild the core and linked adapter after the source checkout changes. They do not register plugins or touch the memory-data directory.
 
 ## 3. Cross-process read/write locks
 
